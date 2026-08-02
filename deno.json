@@ -1,0 +1,16 @@
+{
+  "name": "@ethanthatonekid/commentsh",
+  "version": "0.1.0",
+  "exports": "./commentsh.ts",
+  "tasks": {
+    "commentsh": "deno run --allow-read --allow-write --allow-run commentsh.ts",
+    "docs:gen": "deno run --allow-read --allow-write --allow-run commentsh.ts README.md",
+    "docs:check": "deno run --allow-read --allow-write --allow-run commentsh.ts --check README.md",
+    "test": "deno test --allow-read --allow-write --allow-run",
+    "lint": "deno lint",
+    "fmt": "deno fmt"
+  },
+  "fmt": {
+    "lineWidth": 100
+  }
+}

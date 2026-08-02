@@ -1,0 +1,15 @@
+# Deno
+.deno/
+
+# Freebuff workspace data (not part of the project)
+.freebuff/
+desktop-v2.db
+desktop-v2.db-shm
+desktop-v2.db-wal
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Local scratch
+*.local
