@@ -314,6 +314,8 @@ export async function runCommandStreamed(command: string): Promise<number> {
 export interface ProcessOptions {
   /** When true, never write files; report whether they would change. */
   readonly check?: boolean;
+  /** When true, never write files; return the changes as a unified diff. */
+  readonly diff?: boolean;
   /** Override the auto-detected comment prefix. */
   readonly prefixOverride?: string;
   /** Override the auto-detected comment suffix. */
@@ -330,6 +332,8 @@ export interface ProcessResult {
   readonly error: string | undefined;
   /** Non-zero when a directive's command failed. */
   readonly exitCode: number;
+  /** Unified diff of the changes (only when the `diff` option is set). */
+  readonly diff: string | undefined;
 }
 
 /**
@@ -340,7 +344,7 @@ export async function processFile(
   path: string,
   options: ProcessOptions = {},
 ): Promise<ProcessResult> {
-  const { check = false, prefixOverride, suffixOverride } = options;
+  const { check = false, diff = false, prefixOverride, suffixOverride } = options;
   const text = await Deno.readTextFile(path);
 
   // Binary files produce replacement characters and NUL bytes; skip them.
@@ -352,6 +356,7 @@ export async function processFile(
       skipped: true,
       error: undefined,
       exitCode: 0,
+      diff: undefined,
     };
   }
 
@@ -406,6 +411,7 @@ export async function processFile(
       skipped: false,
       error,
       exitCode,
+      diff: undefined,
     };
   }
 
@@ -429,7 +435,8 @@ export async function processFile(
   }
 
   const changed = updated !== text;
-  if (changed && !check) {
+  const diffText = diff && changed ? unifiedDiff(text, updated, path) : undefined;
+  if (changed && !check && !diff) {
     await Deno.writeTextFile(path, updated);
   }
   return {
@@ -439,7 +446,159 @@ export async function processFile(
     skipped: false,
     error: undefined,
     exitCode: 0,
+    diff: diffText,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Unified diff rendering
+// ---------------------------------------------------------------------------
+
+type DiffOp = { readonly kind: "eq" | "del" | "ins"; readonly text: string };
+
+/** Split into lines, dropping the phantom line from a trailing newline. */
+function splitLines(text: string): string[] {
+  const lines = text.split("\n");
+  if (lines.length > 1 && lines[lines.length - 1] === "") lines.pop();
+  return lines;
+}
+
+/**
+ * Compute a line-based edit script between two texts using LCS dynamic
+ * programming. Falls back to a coarse prefix/suffix diff on very large
+ * inputs so memory stays bounded.
+ */
+function computeDiff(a: string[], b: string[]): DiffOp[] {
+  const n = a.length;
+  const m = b.length;
+  if (n * m > 4_000_000) return coarseDiff(a, b);
+  if (n === 0) return b.map((text) => ({ kind: "ins", text }));
+  if (m === 0) return a.map((text) => ({ kind: "del", text }));
+
+  // LCS lengths in a flat matrix, then backtrack into an edit script.
+  const width = m + 1;
+  const dp = new Uint32Array((n + 1) * width);
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) {
+      dp[i * width + j] = a[i] === b[j]
+        ? dp[(i + 1) * width + j + 1] + 1
+        : Math.max(dp[(i + 1) * width + j], dp[i * width + j + 1]);
+    }
+  }
+  const ops: DiffOp[] = [];
+  let i = 0;
+  let j = 0;
+  while (i < n && j < m) {
+    if (a[i] === b[j]) {
+      ops.push({ kind: "eq", text: a[i] });
+      i++;
+      j++;
+    } else if (dp[(i + 1) * width + j] >= dp[i * width + j + 1]) {
+      ops.push({ kind: "del", text: a[i] });
+      i++;
+    } else {
+      ops.push({ kind: "ins", text: b[j] });
+      j++;
+    }
+  }
+  while (i < n) ops.push({ kind: "del", text: a[i++] });
+  while (j < m) ops.push({ kind: "ins", text: b[j++] });
+  return ops;
+}
+
+function coarseDiff(a: string[], b: string[]): DiffOp[] {
+  let prefix = 0;
+  while (prefix < a.length && prefix < b.length && a[prefix] === b[prefix]) prefix++;
+  let suffix = 0;
+  while (
+    suffix < a.length - prefix && suffix < b.length - prefix &&
+    a[a.length - 1 - suffix] === b[b.length - 1 - suffix]
+  ) {
+    suffix++;
+  }
+  const ops: DiffOp[] = [];
+  for (let i = prefix; i < a.length - suffix; i++) {
+    ops.push({ kind: "del", text: a[i] });
+  }
+  for (let i = prefix; i < b.length - suffix; i++) {
+    ops.push({ kind: "ins", text: b[i] });
+  }
+  return ops;
+}
+
+interface DiffHunk {
+  readonly oldStart: number;
+  readonly oldCount: number;
+  readonly newStart: number;
+  readonly newCount: number;
+  readonly ops: DiffOp[];
+}
+
+/** Group an edit script into hunks with surrounding context lines. */
+function buildHunks(ops: DiffOp[], context = 3): DiffHunk[] {
+  const changes: number[] = [];
+  for (let i = 0; i < ops.length; i++) {
+    if (ops[i].kind !== "eq") changes.push(i);
+  }
+  if (changes.length === 0) return [];
+
+  const ranges: Array<[number, number]> = [];
+  let lo = changes[0];
+  let hi = changes[0];
+  for (let k = 1; k < changes.length; k++) {
+    const idx = changes[k];
+    if (idx - hi <= 2 * context + 1) {
+      hi = idx;
+    } else {
+      ranges.push([lo, hi]);
+      lo = idx;
+      hi = idx;
+    }
+  }
+  ranges.push([lo, hi]);
+
+  const hunks: DiffHunk[] = [];
+  for (const [start, end] of ranges) {
+    const from = Math.max(0, start - context);
+    const to = Math.min(ops.length - 1, end + context);
+    const sub = ops.slice(from, to + 1);
+    let oldCount = 0;
+    let newCount = 0;
+    for (const op of sub) {
+      if (op.kind !== "ins") oldCount++;
+      if (op.kind !== "del") newCount++;
+    }
+    let oldStart = 1;
+    let newStart = 1;
+    for (let k = 0; k < from; k++) {
+      if (ops[k].kind !== "ins") oldStart++;
+      if (ops[k].kind !== "del") newStart++;
+    }
+    if (oldCount === 0) oldStart = Math.max(0, oldStart - 1);
+    if (newCount === 0) newStart = Math.max(0, newStart - 1);
+    hunks.push({ oldStart, oldCount, newStart, newCount, ops: sub });
+  }
+  return hunks;
+}
+
+/** Render a standard unified diff for a single file (git-style header). */
+export function unifiedDiff(original: string, updated: string, path: string): string {
+  const ops = computeDiff(splitLines(original), splitLines(updated));
+  const hunks = buildHunks(ops);
+  if (hunks.length === 0) return "";
+  const lines: string[] = [
+    `diff --git a/${path} b/${path}`,
+    `--- a/${path}`,
+    `+++ b/${path}`,
+  ];
+  for (const hunk of hunks) {
+    lines.push(`@@ -${hunk.oldStart},${hunk.oldCount} +${hunk.newStart},${hunk.newCount} @@`);
+    for (const op of hunk.ops) {
+      const marker = op.kind === "eq" ? " " : op.kind === "del" ? "-" : "+";
+      lines.push(`${marker}${op.text}`);
+    }
+  }
+  return lines.join("\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -509,6 +668,8 @@ export async function collectFiles(paths: string[]): Promise<string[]> {
 
 export interface CliOptions {
   check: boolean;
+  diff: boolean;
+  watch: boolean;
   prefix: string | undefined;
   suffix: string | undefined;
   files: string[];
@@ -524,6 +685,8 @@ export type CliAction =
 export function parseArgs(args: string[]): CliAction {
   const options: CliOptions = {
     check: false,
+    diff: false,
+    watch: false,
     prefix: undefined,
     suffix: undefined,
     files: [],
@@ -548,6 +711,12 @@ export function parseArgs(args: string[]): CliAction {
       case "--check":
         options.check = true;
         break;
+      case "--diff":
+        options.diff = true;
+        break;
+      case "--watch":
+        options.watch = true;
+        break;
       case "--prefix":
       case "--suffix": {
         const value = args[++i];
@@ -569,6 +738,9 @@ export function parseArgs(args: string[]): CliAction {
           options.files.push(arg);
         }
     }
+  }
+  if (options.watch && options.check) {
+    return { kind: "error", message: "cannot combine --watch with --check" };
   }
   if (options.files.length === 0) {
     return { kind: "error", message: "no files or directories given" };
@@ -605,6 +777,9 @@ DESCRIPTION:
 OPTIONS:
       --check            Do not write files. Exit with code 1 if any file
                          would change. Use in CI to catch stale docs.
+      --diff             Do not write files. Print the changes as a unified
+                         diff instead.
+      --watch            Reprocess files whenever they change on disk.
       --prefix <string>  Override the comment prefix (e.g. "--" for SQL).
       --suffix <string>  Override the comment suffix (e.g. "-->" for HTML).
                          Pass an empty string for line comments.
@@ -621,6 +796,8 @@ EXAMPLES:
   commentsh README.md
   commentsh src docs
   commentsh --check .          # fail CI if any docs are stale
+  commentsh --diff README.md   # preview changes
+  commentsh --watch README.md  # live-update while editing
   commentsh --prefix -- --suffix "" schema.sql
 
   Run it without cloning, straight from the repo:
@@ -656,6 +833,11 @@ export async function main(): Promise<void> {
 }
 
 async function runCli(options: CliOptions): Promise<void> {
+  if (options.watch) {
+    await runWatch(options);
+    return;
+  }
+
   let files: string[];
   try {
     files = await collectFiles(options.files);
@@ -664,14 +846,57 @@ async function runCli(options: CliOptions): Promise<void> {
     Deno.exit(1);
   }
 
-  let changedCount = 0;
-  let errorCount = 0;
+  const { changed, errors, firstExitCode } = await processFileList(files, options);
+
+  if (options.diff) {
+    // The diffs themselves are the output; keep stdout clean for piping.
+    if (errors > 0) console.error(`commentsh: ${errors} error(s)`);
+    else if (changed > 0) console.error(`commentsh: ${changed} file(s) would change`);
+    let exitCode = firstExitCode;
+    if (options.check && changed > 0 && exitCode === 0) exitCode = 1;
+    Deno.exit(exitCode);
+  }
+
+  if (options.check) {
+    if (errors === 0 && changed === 0) {
+      console.log(`commentsh: all ${files.length} file(s) up to date`);
+    } else {
+      console.error(
+        `commentsh: ${errors} error(s), ${changed} file(s) out of date`,
+      );
+    }
+  } else {
+    console.log(
+      `commentsh: ${files.length} file(s) processed, ${changed} updated, ` +
+        `${errors} error(s)`,
+    );
+  }
+
+  let exitCode = firstExitCode;
+  if (options.check && changed > 0 && exitCode === 0) exitCode = 1;
+  Deno.exit(exitCode);
+}
+
+interface FileListSummary {
+  readonly changed: number;
+  readonly errors: number;
+  readonly firstExitCode: number;
+}
+
+/** Process a list of files, printing per-file results; returns counts. */
+async function processFileList(
+  files: string[],
+  options: CliOptions,
+): Promise<FileListSummary> {
+  let changed = 0;
+  let errors = 0;
   let firstExitCode = 0;
   for (const file of files) {
     let result: ProcessResult;
     try {
       result = await processFile(file, {
         check: options.check,
+        diff: options.diff,
         prefixOverride: options.prefix,
         suffixOverride: options.suffix,
       });
@@ -679,42 +904,84 @@ async function runCli(options: CliOptions): Promise<void> {
       console.error(
         `commentsh: ${file}: ${err instanceof Error ? err.message : String(err)}`,
       );
-      errorCount++;
+      errors++;
       firstExitCode ||= 1;
       continue;
     }
     if (result.skipped) continue;
     if (result.error !== undefined) {
       console.error(`commentsh: ${file}: ${result.error}`);
-      errorCount++;
+      errors++;
       firstExitCode ||= result.exitCode || 1;
       continue;
     }
     if (result.changed) {
-      changedCount++;
-      if (options.check) console.log(`out of date: ${file}`);
-      else console.log(`updated: ${file}`);
+      changed++;
+      if (result.diff !== undefined) {
+        console.log(result.diff);
+        console.log("");
+      } else if (options.check) {
+        console.log(`out of date: ${file}`);
+      } else {
+        console.log(`updated: ${file}`);
+      }
     }
   }
+  return { changed, errors, firstExitCode };
+}
 
-  if (options.check) {
-    if (errorCount === 0 && changedCount === 0) {
-      console.log(`commentsh: all ${files.length} file(s) up to date`);
-    } else {
-      console.error(
-        `commentsh: ${errorCount} error(s), ${changedCount} file(s) out of date`,
-      );
-    }
-  } else {
-    console.log(
-      `commentsh: ${files.length} file(s) processed, ${changedCount} updated, ` +
-        `${errorCount} error(s)`,
-    );
+// ---------------------------------------------------------------------------
+// Watch mode
+// ---------------------------------------------------------------------------
+
+/** Debounce a function: only the last call within `ms` milliseconds runs. */
+export function debounce(fn: () => void, ms: number): () => void {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  return () => {
+    if (timer !== undefined) clearTimeout(timer);
+    timer = setTimeout(() => {
+      timer = undefined;
+      fn();
+    }, ms);
+  };
+}
+
+/** Drop paths that live inside a skipped directory (node_modules, .git, …). */
+export function filterWatchPaths(paths: string[]): string[] {
+  return paths.filter((path) => {
+    const segments = path.split(/[\\/]/);
+    return !segments.some((segment) => segment !== "" && SKIPPED_DIRECTORIES.has(segment));
+  });
+}
+
+/**
+ * Reprocess files whenever the watched paths change. Runs an initial pass,
+ * then reacts to filesystem events until the process is interrupted.
+ */
+export async function runWatch(options: CliOptions): Promise<void> {
+  const initial = await collectFiles(options.files).catch((err: unknown) => {
+    console.error(`commentsh: ${err instanceof Error ? err.message : String(err)}`);
+    Deno.exit(1);
+  });
+  await processFileList(initial, options);
+  console.log(
+    `commentsh: watching ${options.files.join(", ")} — press Ctrl-C to stop`,
+  );
+
+  const watcher = Deno.watchFs(options.files, { recursive: true });
+  const pending = new Set<string>();
+  const flush = debounce(() => {
+    const files = filterWatchPaths([...pending]);
+    pending.clear();
+    if (files.length === 0) return;
+    void processFileList(files, options).catch((err: unknown) => {
+      console.error(`commentsh: ${err instanceof Error ? err.message : String(err)}`);
+    });
+  }, 150);
+  for await (const event of watcher) {
+    for (const path of event.paths) pending.add(path);
+    flush();
   }
-
-  let exitCode = firstExitCode;
-  if (options.check && changedCount > 0 && exitCode === 0) exitCode = 1;
-  Deno.exit(exitCode);
 }
 
 if (import.meta.main) {

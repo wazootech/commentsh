@@ -1,0 +1,86 @@
+name: Check commentsh docs
+description: >-
+  Runs commentsh --check on the given files and fails the build whenever any
+  generated block is out of date. See https://github.com/EthanThatOneKid/commentsh
+inputs:
+  files:
+    description: Newline-delimited file or directory paths to check.
+    required: true
+  prefix:
+    description: Comment-prefix override (e.g. "--" for SQL).
+    required: false
+  suffix:
+    description: Comment-suffix override (e.g. "-->" for HTML).
+    required: false
+  version:
+    description: >-
+      commentsh ref (tag, branch, or commit) to run from GitHub raw. Leave
+      empty to use the action's own ref, or when running the action locally.
+    required: false
+  deno-version:
+    description: Deno version to install.
+    required: false
+    default: v2.x
+outputs:
+  changed:
+    description: "true when any file is out of date"
+    value: ${{ steps.check.outputs.changed }}
+  stale-files:
+    description: Newline-delimited list of out-of-date files
+    value: ${{ steps.check.outputs.stale-files }}
+runs:
+  using: composite
+  steps:
+    - uses: denoland/setup-deno@v2
+      with:
+        deno-version: ${{ inputs.deno-version }}
+    - id: check
+      shell: bash
+      env:
+        INPUT_FILES: ${{ inputs.files }}
+        INPUT_PREFIX: ${{ inputs.prefix }}
+        INPUT_SUFFIX: ${{ inputs.suffix }}
+        INPUT_VERSION: ${{ inputs.version }}
+        ACTION_REF: ${{ github.action_ref }}
+      run: |
+        set -euo pipefail
+
+        # Prefer an explicit version, then the action's own ref. Local
+        # (in-repo) runs have no ref, so fall back to the checked-out file.
+        REF="${INPUT_VERSION:-${ACTION_REF:-}}"
+        if [ -n "${REF}" ]; then
+          CSH="https://raw.githubusercontent.com/EthanThatOneKid/commentsh/${REF}/commentsh.ts"
+        else
+          CSH="./commentsh.ts"
+        fi
+
+        ARGS=(--check)
+        if [ -n "${INPUT_PREFIX}" ]; then ARGS+=(--prefix "${INPUT_PREFIX}"); fi
+        if [ -n "${INPUT_SUFFIX}" ]; then ARGS+=(--suffix "${INPUT_SUFFIX}"); fi
+
+        FILES=()
+        while IFS= read -r line; do
+          [ -n "${line}" ] && FILES+=("${line}")
+        done <<< "${INPUT_FILES}"
+
+        set +e
+        OUTPUT="$(deno run --allow-read --allow-write --allow-run "${CSH}" "${ARGS[@]}" "${FILES[@]}" 2>&1)"
+        STATUS=$?
+        set -e
+
+        printf '%s\n' "${OUTPUT}"
+
+        if [ "${STATUS}" -ne 0 ]; then
+          echo "changed=true" >> "${GITHUB_OUTPUT}"
+        else
+          echo "changed=false" >> "${GITHUB_OUTPUT}"
+        fi
+
+        STALE="$(printf '%s\n' "${OUTPUT}" | sed -n 's/^out of date: //p')"
+        {
+          echo "stale-files<<CSH_EOF"
+          printf '%s\n' "${STALE}"
+          echo "CSH_EOF"
+        } >> "${GITHUB_OUTPUT}"
+
+        exit "${STATUS}"

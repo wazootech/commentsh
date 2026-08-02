@@ -50,3 +50,24 @@ Deno.test("returns help and version actions", () => {
   assertEquals(parseArgs(["--version"]).kind, "version");
   assertEquals(parseArgs(["-V"]).kind, "version");
 });
+
+Deno.test("parses --diff and --watch flags", () => {
+  const diff = runOptions(["--diff", "README.md"]);
+  assertEquals(diff?.diff, true);
+  assertEquals(diff?.watch, false);
+  assertEquals(diff?.files, ["README.md"]);
+
+  const watch = runOptions(["--watch", "src"]);
+  assertEquals(watch?.watch, true);
+  assertEquals(watch?.check, false);
+  assertEquals(watch?.files, ["src"]);
+
+  const both = runOptions(["--watch", "--diff", "."]);
+  assertEquals(both?.watch, true);
+  assertEquals(both?.diff, true);
+});
+
+Deno.test("rejects --watch combined with --check", () => {
+  assertEquals(parseArgs(["--watch", "--check", "."]).kind, "error");
+  assertEquals(parseArgs(["--check", "--watch", "."]).kind, "error");
+});
