@@ -60,6 +60,8 @@ runs:
 
         FILES=()
         while IFS= read -r line; do
+          # Strip a carriage return for workflows saved with CRLF endings.
+          line="${line%$'\r'}"
           [ -n "${line}" ] && FILES+=("${line}")
         done <<< "${INPUT_FILES}"
 

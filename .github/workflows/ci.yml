@@ -19,7 +19,9 @@ jobs:
       - run: deno fmt --check
       - run: deno lint
       - run: deno test --allow-read --allow-write --allow-run
+      # The reusable action is documented for consumers, but this repo's own
+      # self-check uses the raw step: local actions are not available to pull
+      # requests from forks, and this tests the PR's own commentsh.ts against
+      # its README.
       - name: commentsh self-check (README must be up to date)
-        uses: ./.github/actions/check-commentsh
-        with:
-          files: README.md
+        run: deno run --allow-read --allow-write --allow-run commentsh.ts --check README.md

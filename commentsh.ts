@@ -970,13 +970,31 @@ export async function runWatch(options: CliOptions): Promise<void> {
 
   const watcher = Deno.watchFs(options.files, { recursive: true });
   const pending = new Set<string>();
-  const flush = debounce(() => {
-    const files = filterWatchPaths([...pending]);
+  let processing = false;
+  const flush = debounce(async () => {
+    // Skip while a pass is in flight; the finishing pass re-schedules so
+    // edits made during processing are not dropped.
+    if (processing) return;
+    processing = true;
+    const files: string[] = [];
+    for (const candidate of filterWatchPaths([...pending])) {
+      try {
+        const info = await Deno.stat(candidate);
+        if (info.isFile) files.push(candidate);
+      } catch {
+        // Path vanished (deleted or moved); nothing to process.
+      }
+    }
     pending.clear();
-    if (files.length === 0) return;
-    void processFileList(files, options).catch((err: unknown) => {
-      console.error(`commentsh: ${err instanceof Error ? err.message : String(err)}`);
-    });
+    if (files.length > 0) {
+      try {
+        await processFileList(files, options);
+      } catch (err) {
+        console.error(`commentsh: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    processing = false;
+    if (pending.size > 0) flush();
   }, 150);
   for await (const event of watcher) {
     for (const path of event.paths) pending.add(path);
