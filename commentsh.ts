@@ -230,8 +230,9 @@ export function collectDirectives(text: string, syntax: CommentSyntax): Directiv
       }
       pendingExec = token;
     } else {
-      // Closing tag.
-      if (pendingExec !== undefined) {
+      // Closing tag. Ignore it when it overlaps the opening tag (a command
+      // that happens to end in `/exec`, e.g. `<!-- exec: bash /exec -->`).
+      if (pendingExec !== undefined && token.start >= pendingExec.end) {
         directives.push({
           kind: "exec",
           command: pendingExec.command ?? "",
@@ -243,7 +244,7 @@ export function collectDirectives(text: string, syntax: CommentSyntax): Directiv
         });
         pendingExec = undefined;
       }
-      // Stray closing tags are ignored.
+      // Overlapping or stray closing tags are ignored.
     }
   }
   if (pendingExec !== undefined) {
@@ -418,6 +419,8 @@ export async function processFile(
     if (directive.kind !== "exec" || directive.endTagStart === undefined) {
       continue;
     }
+    // Defensive: never inject when the tags overlap (should not happen).
+    if (directive.endTagStart < directive.contentStart) continue;
     const content = updated.slice(directive.contentStart, directive.endTagStart);
     const layout = /^(\s*)([\s\S]*?)(\s*)$/.exec(content) ?? ["", "", "", ""];
     const injected = (layout[1] ?? "") + outputs[i] + (layout[3] ?? "");

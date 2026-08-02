@@ -1,5 +1,5 @@
 import { assertEquals, assertNotEquals } from "./assert.ts";
-import { processFile } from "../commentsh.ts";
+import { collectFiles, processFile } from "../commentsh.ts";
 
 /** A command that exits with a non-zero code on every platform. */
 const FAILING_COMMAND = Deno.build.os === "windows" ? "exit /b 1" : "false";
@@ -170,6 +170,50 @@ Deno.test("formatter-friendly blank lines are stable (idempotent)", async () => 
       );
     },
   );
+});
+
+Deno.test("a command ending in /exec is not mistaken for the closing tag", async () => {
+  await withTempFile(
+    "test.md",
+    "<!-- exec: echo hello /exec -->\nstale\n<!-- /exec -->\n",
+    async (path) => {
+      const result = await processFile(path);
+      assertEquals(result.error, undefined);
+      assertEquals(result.changed, true);
+      assertEquals(
+        await Deno.readTextFile(path),
+        "<!-- exec: echo hello /exec -->\nhello /exec\n<!-- /exec -->\n",
+      );
+    },
+  );
+});
+
+Deno.test("collectFiles walks directories and skips vendor folders", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    await Deno.mkdir(`${dir}/src`, { recursive: true });
+    await Deno.mkdir(`${dir}/node_modules/pkg`, { recursive: true });
+    await Deno.mkdir(`${dir}/.git/hooks`, { recursive: true });
+    await Deno.writeTextFile(`${dir}/src/a.md`, "x");
+    await Deno.writeTextFile(`${dir}/src/b.py`, "x");
+    await Deno.writeTextFile(`${dir}/node_modules/pkg/c.md`, "x");
+    await Deno.writeTextFile(`${dir}/.git/hooks/d.md`, "x");
+    const files = await collectFiles([dir]);
+    assertEquals(files.sort(), [`${dir}/src/a.md`, `${dir}/src/b.py`]);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("collectFiles reports a clean error for missing paths", async () => {
+  let threw = false;
+  try {
+    await collectFiles(["does-not-exist.md"]);
+  } catch (err) {
+    threw = true;
+    assertNotEquals(err instanceof Error ? err.message : "", "");
+  }
+  assertEquals(threw, true);
 });
 
 Deno.test("prefix override forces comment syntax", async () => {

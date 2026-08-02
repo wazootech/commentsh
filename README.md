@@ -60,7 +60,7 @@ commentsh --prefix -- --suffix "" schema.sql
 ```
 
 Directives must appear at the start of a line and commands run through the platform shell (`sh -c`
-on Unix and macOS, `cmd /c` on Windows).
+on Unix and macOS, `cmd /c` on Windows), so quoting rules follow that shell.
 
 ## Usage
 
@@ -186,6 +186,8 @@ directive is malformed / stale docs, `2` invalid usage.
   with a clear error and a non-zero exit code.
 - **Deterministic ordering.** Directives execute in file order, so later directives can depend on
   side effects from earlier ones.
+- **No nesting.** A directive inside an `exec:` block is treated as block content. An `exec:` block
+  whose closing comment never arrives is an error, and commands are single-line.
 - **Safe by default.** Directives only match at the start of a line, and binary files are skipped.
   Note that, like `go:generate`, commentsh scans raw text — a `exec:`/`run:` string in a string
   literal will still execute.
