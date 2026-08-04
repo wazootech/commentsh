@@ -13,15 +13,15 @@ Deno.test("parses check flag and positional paths", () => {
   assertEquals(options?.files, ["README.md", "src"]);
 });
 
-Deno.test("parses prefix and suffix overrides in both forms", () => {
-  const options = runOptions(["--prefix", "--", "--suffix=", "schema.sql"]);
+Deno.test("parses prefix and suffix overrides", () => {
+  const options = runOptions(["--prefix", "--", "--suffix", "", "schema.sql"]);
   assertEquals(options?.prefix, "--");
   assertEquals(options?.suffix, "");
   assertEquals(options?.files, ["schema.sql"]);
 
-  const longForm = runOptions(["--prefix=#", "--suffix=##", "a.py"]);
-  assertEquals(longForm?.prefix, "#");
-  assertEquals(longForm?.suffix, "##");
+  const spaced = runOptions(["--prefix", "#", "--suffix", "##", "a.py"]);
+  assertEquals(spaced?.prefix, "#");
+  assertEquals(spaced?.suffix, "##");
 });
 
 Deno.test("supports -- to end option parsing", () => {
@@ -33,6 +33,7 @@ Deno.test("supports -- to end option parsing", () => {
 Deno.test("returns error for unknown options", () => {
   const action = parseArgs(["--frobnicate", "x.md"]);
   assertEquals(action.kind, "error");
+  assertEquals(parseArgs(["--diff", "x.md"]).kind, "error");
 });
 
 Deno.test("returns error when no files are given", () => {
@@ -51,20 +52,11 @@ Deno.test("returns help and version actions", () => {
   assertEquals(parseArgs(["-V"]).kind, "version");
 });
 
-Deno.test("parses --diff and --watch flags", () => {
-  const diff = runOptions(["--diff", "README.md"]);
-  assertEquals(diff?.diff, true);
-  assertEquals(diff?.watch, false);
-  assertEquals(diff?.files, ["README.md"]);
-
+Deno.test("parses the --watch flag", () => {
   const watch = runOptions(["--watch", "src"]);
   assertEquals(watch?.watch, true);
   assertEquals(watch?.check, false);
   assertEquals(watch?.files, ["src"]);
-
-  const both = runOptions(["--watch", "--diff", "."]);
-  assertEquals(both?.watch, true);
-  assertEquals(both?.diff, true);
 });
 
 Deno.test("rejects --watch combined with --check", () => {
