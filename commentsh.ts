@@ -1,21 +1,8 @@
 /**
- * commentsh — Comment Shell.
- *
- * Run shell commands from inside code comments. commentsh scans text files
- * for comment directives, executes the referenced commands, and either
- * injects their stdout back into the file (`cmd:` blocks) or runs them as
- * side effects (`cmd!:` directives).
- *
- * Run it from this repo:
- *
- *   deno run --allow-read --allow-write --allow-run commentsh.ts [OPTIONS] <FILE|DIR>...
- *
- * Or straight from GitHub, without cloning:
- *
- *   deno run --allow-read --allow-write --allow-run \
- *     https://raw.githubusercontent.com/EthanThatOneKid/commentsh/main/commentsh.ts \
- *     [OPTIONS] <FILE|DIR>...
- *
+ * commentsh — Comment Shell. Runs shell commands from code comments.
+ * `cmd:` blocks inject command stdout between the tag and its `/cmd` closer;
+ * `cmd!:` lines run one-liners as side effects. Zero imports; run from any
+ * URL or checkout.
  * @module
  */
 
@@ -30,119 +17,102 @@ export interface CommentSyntax {
   readonly suffix: string;
 }
 
-const HTML_COMMENTS: CommentSyntax = { prefix: "<!--", suffix: "-->" };
-const HASH_COMMENTS: CommentSyntax = { prefix: "#", suffix: "" };
-const SLASH_COMMENTS: CommentSyntax = { prefix: "//", suffix: "" };
-const DASH_COMMENTS: CommentSyntax = { prefix: "--", suffix: "" };
-const STAR_COMMENTS: CommentSyntax = { prefix: "/*", suffix: "*/" };
+const HTML: CommentSyntax = { prefix: "<!--", suffix: "-->" };
+const HASH: CommentSyntax = { prefix: "#", suffix: "" };
+const SLASH: CommentSyntax = { prefix: "//", suffix: "" };
+const DASH: CommentSyntax = { prefix: "--", suffix: "" };
+const STAR: CommentSyntax = { prefix: "/*", suffix: "*/" };
 
-/** Comment syntax keyed by file extension (lowercase, with the dot). */
-const EXTENSION_SYNTAXES: Record<string, CommentSyntax> = {
-  // Markup
-  ".md": HTML_COMMENTS,
-  ".markdown": HTML_COMMENTS,
-  ".html": HTML_COMMENTS,
-  ".htm": HTML_COMMENTS,
-  ".xml": HTML_COMMENTS,
-  ".svg": HTML_COMMENTS,
-  // C-family / JS / TS
-  ".ts": SLASH_COMMENTS,
-  ".tsx": SLASH_COMMENTS,
-  ".mts": SLASH_COMMENTS,
-  ".cts": SLASH_COMMENTS,
-  ".js": SLASH_COMMENTS,
-  ".jsx": SLASH_COMMENTS,
-  ".mjs": SLASH_COMMENTS,
-  ".cjs": SLASH_COMMENTS,
-  ".go": SLASH_COMMENTS,
-  ".rs": SLASH_COMMENTS,
-  ".java": SLASH_COMMENTS,
-  ".c": SLASH_COMMENTS,
-  ".h": SLASH_COMMENTS,
-  ".cc": SLASH_COMMENTS,
-  ".cpp": SLASH_COMMENTS,
-  ".hpp": SLASH_COMMENTS,
-  ".cs": SLASH_COMMENTS,
-  ".swift": SLASH_COMMENTS,
-  ".kt": SLASH_COMMENTS,
-  ".kts": SLASH_COMMENTS,
-  ".dart": SLASH_COMMENTS,
-  ".zig": SLASH_COMMENTS,
-  // Hash comments
-  ".py": HASH_COMMENTS,
-  ".rb": HASH_COMMENTS,
-  ".pl": HASH_COMMENTS,
-  ".pm": HASH_COMMENTS,
-  ".sh": HASH_COMMENTS,
-  ".bash": HASH_COMMENTS,
-  ".zsh": HASH_COMMENTS,
-  ".fish": HASH_COMMENTS,
-  ".yml": HASH_COMMENTS,
-  ".yaml": HASH_COMMENTS,
-  ".toml": HASH_COMMENTS,
-  // Dash comments
-  ".sql": DASH_COMMENTS,
-  ".lua": DASH_COMMENTS,
-  ".hs": DASH_COMMENTS,
-  // Block comments
-  ".css": STAR_COMMENTS,
-  ".scss": STAR_COMMENTS,
-  ".sass": STAR_COMMENTS,
-  ".less": STAR_COMMENTS,
+const EXT: Record<string, CommentSyntax> = {
+  ".md": HTML,
+  ".markdown": HTML,
+  ".html": HTML,
+  ".htm": HTML,
+  ".xml": HTML,
+  ".svg": HTML,
+  ".ts": SLASH,
+  ".tsx": SLASH,
+  ".mts": SLASH,
+  ".cts": SLASH,
+  ".js": SLASH,
+  ".jsx": SLASH,
+  ".mjs": SLASH,
+  ".cjs": SLASH,
+  ".go": SLASH,
+  ".rs": SLASH,
+  ".java": SLASH,
+  ".c": SLASH,
+  ".h": SLASH,
+  ".cc": SLASH,
+  ".cpp": SLASH,
+  ".hpp": SLASH,
+  ".cs": SLASH,
+  ".swift": SLASH,
+  ".kt": SLASH,
+  ".kts": SLASH,
+  ".dart": SLASH,
+  ".zig": SLASH,
+  ".py": HASH,
+  ".rb": HASH,
+  ".pl": HASH,
+  ".pm": HASH,
+  ".sh": HASH,
+  ".bash": HASH,
+  ".zsh": HASH,
+  ".fish": HASH,
+  ".yml": HASH,
+  ".yaml": HASH,
+  ".toml": HASH,
+  ".sql": DASH,
+  ".lua": DASH,
+  ".hs": DASH,
+  ".css": STAR,
+  ".scss": STAR,
+  ".sass": STAR,
+  ".less": STAR,
 };
 
-/** Comment syntax keyed by exact filename (files without extensions). */
-const FILENAME_SYNTAXES: Record<string, CommentSyntax> = {
-  "Dockerfile": HASH_COMMENTS,
-  "Containerfile": HASH_COMMENTS,
-  "Makefile": HASH_COMMENTS,
-  "Gemfile": HASH_COMMENTS,
-  "Rakefile": HASH_COMMENTS,
-  "justfile": HASH_COMMENTS,
-  ".gitignore": HASH_COMMENTS,
-  ".gitattributes": HASH_COMMENTS,
-  ".env": HASH_COMMENTS,
-  ".npmrc": HASH_COMMENTS,
+const NAME: Record<string, CommentSyntax> = {
+  "Dockerfile": HASH,
+  "Containerfile": HASH,
+  "Makefile": HASH,
+  "Gemfile": HASH,
+  "Rakefile": HASH,
+  "justfile": HASH,
+  ".gitignore": HASH,
+  ".gitattributes": HASH,
+  ".env": HASH,
+  ".npmrc": HASH,
 };
 
-/**
- * Resolve the comment syntax for a file path. Falls back to HTML comments
- * (`<!-- -->`) for unknown extensions, which keeps directives invisible in
- * rendered Markdown.
- */
+/** Comment syntax for a path; unknown extensions fall back to HTML. */
 export function syntaxForPath(path: string): CommentSyntax {
-  const filename = path.split(/[\\/]/).pop() ?? path;
-  if (filename in FILENAME_SYNTAXES) return FILENAME_SYNTAXES[filename];
-  const dot = filename.lastIndexOf(".");
+  const name = path.split(/[\\/]/).pop() ?? path;
+  if (name in NAME) return NAME[name];
+  const dot = name.lastIndexOf(".");
   if (dot > 0) {
-    const ext = filename.slice(dot).toLowerCase();
-    if (ext in EXTENSION_SYNTAXES) return EXTENSION_SYNTAXES[ext];
+    const ext = name.slice(dot).toLowerCase();
+    if (ext in EXT) return EXT[ext];
   }
-  return HTML_COMMENTS;
+  return HTML;
 }
 
 // ---------------------------------------------------------------------------
-// Directive parsing
+// Directive parsing (hand-written tokenizer, no regex scanning)
 // ---------------------------------------------------------------------------
 
 export interface Directive {
   /** `inject` blocks write stdout into the file; `run` directives are `cmd!` side effects. */
   readonly kind: "inject" | "run";
   readonly command: string;
-  /** 1-based line number of the directive in the file. */
   readonly line: number;
-  /** Character index just past the opening comment. */
   readonly contentStart: number;
-  /** Character index where the closing comment begins (inject blocks only). */
   readonly endTagStart: number | undefined;
-  /** True when the directive has a closing comment. */
   readonly hasEndTag: boolean;
-  /** True when an inject block is missing its closing comment. */
   readonly malformed: boolean;
 }
 
-/** A raw directive line found while scanning a file. */
-interface ParsedToken {
+interface Token {
   readonly type: "inject" | "run" | "end";
   readonly command: string | undefined;
   readonly start: number;
@@ -150,205 +120,173 @@ interface ParsedToken {
   readonly line: number;
 }
 
-function isSpace(char: string): boolean {
-  return char === " " || char === "\t" || char === "\r" || char === "\f" ||
-    char === "\v";
-}
+const WS = /[\t\r\f\v ]/;
 
-/**
- * True when a directive terminator follows at `from`: either the comment
- * suffix (HTML-style) or, for line comments, the end of the line.
- */
-function terminatorMatches(
-  content: string,
-  from: number,
-  suffix: string,
-): boolean {
-  if (suffix === "") return from === content.length;
+/** True when a terminator follows at `from`: the HTML suffix or end of line. */
+function hasTerminator(line: string, from: number, suffix: string): boolean {
+  if (suffix === "") return from === line.length;
   let j = from;
-  while (j < content.length && isSpace(content[j])) j++;
-  return content.startsWith(suffix, j);
+  while (j < line.length && WS.test(line[j])) j++;
+  return line.startsWith(suffix, j);
 }
 
-/**
- * Extract the command after a directive's colon, validating the terminator.
- * The command runs to the comment suffix (HTML-style) or the end of the
- * line, with surrounding whitespace trimmed.
- */
+/** Command text after a directive's colon, up to the suffix / end of line. */
 function scanCommand(
-  content: string,
+  line: string,
   from: number,
   suffix: string,
-): { readonly command: string; readonly commentEnd: number } | undefined {
+): { command: string; commentEnd: number } | undefined {
   let i = from;
-  while (i < content.length && isSpace(content[i])) i++;
+  while (i < line.length && WS.test(line[i])) i++;
   if (suffix === "") {
-    let end = content.length;
-    while (end > i && isSpace(content[end - 1])) end--;
-    return { command: content.slice(i, end), commentEnd: content.length };
+    let end = line.length;
+    while (end > i && WS.test(line[end - 1])) end--;
+    return { command: line.slice(i, end), commentEnd: line.length };
   }
-  const end = content.indexOf(suffix, i);
+  const end = line.indexOf(suffix, i);
   if (end === -1) return undefined;
   let commandEnd = end;
-  while (commandEnd > i && isSpace(content[commandEnd - 1])) commandEnd--;
-  return {
-    command: content.slice(i, commandEnd),
-    commentEnd: end + suffix.length,
-  };
+  while (commandEnd > i && WS.test(line[commandEnd - 1])) commandEnd--;
+  return { command: line.slice(i, commandEnd), commentEnd: end + suffix.length };
 }
 
 /**
- * Scan one line for a directive token using hand-written character scanning
- * (no regular expressions), so comment prefixes, keywords, and terminators
- * are matched exactly.
+ * Scan one line for a directive token. Directives start a line (after
+ * whitespace) with the comment prefix, then `cmd [!] :` or `/cmd`.
  */
 function scanLine(
-  content: string,
+  line: string,
   lineStart: number,
-  lineNumber: number,
+  lineNo: number,
   syntax: CommentSyntax,
-): ParsedToken | undefined {
+): Token | undefined {
   const { prefix, suffix } = syntax;
   let i = 0;
-  while (i < content.length && isSpace(content[i])) i++;
-  if (!content.startsWith(prefix, i)) return undefined;
+  while (i < line.length && WS.test(line[i])) i++;
+  if (!line.startsWith(prefix, i)) return undefined;
   i += prefix.length;
-  while (i < content.length && isSpace(content[i])) i++;
+  while (i < line.length && WS.test(line[i])) i++;
 
-  // Closing tag: `<prefix> /cmd <terminator>`.
-  if (content.startsWith("/cmd", i)) {
+  if (line.startsWith("/cmd", i)) {
     const after = i + 4;
-    if (terminatorMatches(content, after, suffix)) {
+    if (hasTerminator(line, after, suffix)) {
       return {
         type: "end",
         command: undefined,
         start: lineStart,
         end: lineStart + after,
-        line: lineNumber,
+        line: lineNo,
       };
     }
     return undefined;
   }
-
-  // Opening tag: `<prefix> cmd [!] : <command> <terminator>`.
-  if (content.startsWith("cmd", i)) {
+  if (line.startsWith("cmd", i)) {
     let k = i + 3;
-    const bang = content[k] === "!";
+    const bang = line[k] === "!";
     if (bang) k++;
-    if (content[k] !== ":") return undefined;
-    const command = scanCommand(content, k + 1, suffix);
-    if (command === undefined) return undefined;
+    if (line[k] !== ":") return undefined;
+    const cmd = scanCommand(line, k + 1, suffix);
+    if (cmd === undefined) return undefined;
     return {
       type: bang ? "run" : "inject",
-      command: command.command,
+      command: cmd.command,
       start: lineStart,
-      end: lineStart + command.commentEnd,
-      line: lineNumber,
+      end: lineStart + cmd.commentEnd,
+      line: lineNo,
     };
   }
   return undefined;
 }
 
-/** Collect every directive token in a file, in line order. */
-function scanTokens(text: string, syntax: CommentSyntax): ParsedToken[] {
-  const tokens: ParsedToken[] = [];
+/** Every directive token in a file, in line order. */
+function scanTokens(text: string, syntax: CommentSyntax): Token[] {
+  const tokens: Token[] = [];
   let lineStart = 0;
-  let lineNumber = 1;
+  let lineNo = 1;
   while (lineStart <= text.length) {
     const nl = text.indexOf("\n", lineStart);
     const lineEnd = nl === -1 ? text.length : nl;
-    let content = text.slice(lineStart, lineEnd);
-    if (content.endsWith("\r")) content = content.slice(0, -1);
-    const token = scanLine(content, lineStart, lineNumber, syntax);
+    let line = text.slice(lineStart, lineEnd);
+    if (line.endsWith("\r")) line = line.slice(0, -1);
+    const token = scanLine(line, lineStart, lineNo, syntax);
     if (token !== undefined) tokens.push(token);
     if (nl === -1) break;
     lineStart = nl + 1;
-    lineNumber++;
+    lineNo++;
   }
   return tokens;
 }
 
 /**
- * Find every directive in a file's text.
- *
- * Directives are scanned as raw tokens (opening tags, closing tags, and
- * `cmd!:` lines) and then paired up in file order. Anything that appears
- * between a `cmd:` opening tag and its `/cmd` closing tag is treated as
- * block content, never as a directive in its own right.
+ * Find every directive in a file. Tokens are paired in file order; content
+ * between a `cmd:` opening tag and its `/cmd` closer is never a directive.
  */
 export function collectDirectives(text: string, syntax: CommentSyntax): Directive[] {
   const tokens = scanTokens(text, syntax);
-  const directives: Directive[] = [];
-  let pendingBlock: ParsedToken | undefined;
-  for (const token of tokens) {
-    if (token.type === "run") {
-      if (pendingBlock !== undefined) continue; // inside a block: it's content
-      directives.push({
+  const out: Directive[] = [];
+  let open: Token | undefined;
+  for (const t of tokens) {
+    if (t.type === "run") {
+      if (open !== undefined) continue; // inside a block: content
+      out.push({
         kind: "run",
-        command: token.command ?? "",
-        line: token.line,
-        contentStart: token.end,
+        command: t.command ?? "",
+        line: t.line,
+        contentStart: t.end,
         endTagStart: undefined,
         hasEndTag: false,
         malformed: false,
       });
-    } else if (token.type === "inject") {
-      if (pendingBlock !== undefined) {
-        // A second opening tag before the closing tag: the first is malformed.
-        directives.push({
+    } else if (t.type === "inject") {
+      if (open !== undefined) {
+        // Second opening before a closer: the first is malformed.
+        out.push({
           kind: "inject",
-          command: pendingBlock.command ?? "",
-          line: pendingBlock.line,
-          contentStart: pendingBlock.end,
+          command: open.command ?? "",
+          line: open.line,
+          contentStart: open.end,
           endTagStart: undefined,
           hasEndTag: false,
           malformed: true,
         });
       }
-      pendingBlock = token;
-    } else {
-      // Closing tag. The overlap check is defensive-only: the line tokenizer
-      // emits one token per line in file order, so a closing tag can never
-      // start inside an opening tag (e.g. a command ending in `/cmd`).
-      if (pendingBlock !== undefined && token.start >= pendingBlock.end) {
-        directives.push({
-          kind: "inject",
-          command: pendingBlock.command ?? "",
-          line: pendingBlock.line,
-          contentStart: pendingBlock.end,
-          endTagStart: token.start,
-          hasEndTag: true,
-          malformed: false,
-        });
-        pendingBlock = undefined;
-      }
-      // Overlapping or stray closing tags are ignored.
+      open = t;
+    } else if (open !== undefined && t.start >= open.end) {
+      out.push({
+        kind: "inject",
+        command: open.command ?? "",
+        line: open.line,
+        contentStart: open.end,
+        endTagStart: t.start,
+        hasEndTag: true,
+        malformed: false,
+      });
+      open = undefined;
     }
+    // Stray or overlapping closing tags are ignored.
   }
-  if (pendingBlock !== undefined) {
-    directives.push({
+  if (open !== undefined) {
+    out.push({
       kind: "inject",
-      command: pendingBlock.command ?? "",
-      line: pendingBlock.line,
-      contentStart: pendingBlock.end,
+      command: open.command ?? "",
+      line: open.line,
+      contentStart: open.end,
       endTagStart: undefined,
       hasEndTag: false,
       malformed: true,
     });
   }
-  return directives;
+  return out;
 }
 
 // ---------------------------------------------------------------------------
 // Command execution
 // ---------------------------------------------------------------------------
 
-/** The shell used to run directives, per platform. */
 export function shellInvocation(command: string): [string, string[]] {
-  if (Deno.build.os === "windows") {
-    return ["cmd", ["/d", "/s", "/c", command]];
-  }
-  return ["sh", ["-c", command]];
+  return Deno.build.os === "windows"
+    ? ["cmd", ["/d", "/s", "/c", command]]
+    : ["sh", ["-c", command]];
 }
 
 export interface CommandResult {
@@ -357,15 +295,14 @@ export interface CommandResult {
   readonly code: number;
 }
 
-/** Run a command and capture its output. */
+/** Run a command, capturing stdout/stderr. */
 export async function runCommand(command: string): Promise<CommandResult> {
   const [shell, args] = shellInvocation(command);
-  const child = new Deno.Command(shell, {
+  const { stdout, stderr, code } = await new Deno.Command(shell, {
     args,
     stdout: "piped",
     stderr: "piped",
-  });
-  const { stdout, stderr, code } = await child.output();
+  }).output();
   return {
     stdout: new TextDecoder().decode(stdout),
     stderr: new TextDecoder().decode(stderr),
@@ -373,16 +310,11 @@ export async function runCommand(command: string): Promise<CommandResult> {
   };
 }
 
-/** Run a command, streaming its output to the terminal. Returns the exit code. */
+/** Run a command, streaming output to the terminal. */
 export async function runCommandStreamed(command: string): Promise<number> {
   const [shell, args] = shellInvocation(command);
-  const child = new Deno.Command(shell, {
-    args,
-    stdout: "inherit",
-    stderr: "inherit",
-  });
-  const { code } = await child.output();
-  return code;
+  return (await new Deno.Command(shell, { args, stdout: "inherit", stderr: "inherit" }).output())
+    .code;
 }
 
 // ---------------------------------------------------------------------------
@@ -390,13 +322,9 @@ export async function runCommandStreamed(command: string): Promise<number> {
 // ---------------------------------------------------------------------------
 
 export interface ProcessOptions {
-  /** When true, never write files; report whether they would change. */
   readonly check?: boolean;
-  /** When true, never write files; return the changes as a unified diff. */
   readonly diff?: boolean;
-  /** Override the auto-detected comment prefix. */
   readonly prefixOverride?: string;
-  /** Override the auto-detected comment suffix. */
   readonly suffixOverride?: string;
 }
 
@@ -404,28 +332,19 @@ export interface ProcessResult {
   readonly path: string;
   readonly changed: boolean;
   readonly directives: number;
-  /** Set when the file was skipped (binary) or failed to process. */
   readonly skipped: boolean;
-  /** Human-readable error, if any. */
   readonly error: string | undefined;
-  /** Non-zero when a directive's command failed. */
   readonly exitCode: number;
-  /** Unified diff of the changes (only when the `diff` option is set). */
   readonly diff: string | undefined;
 }
 
-/**
- * Process one file: execute its directives and, unless `--check` is set,
- * write the file back when an inject block's content changed.
- */
+/** Execute a file's directives; write back when an inject block changed. */
 export async function processFile(
   path: string,
   options: ProcessOptions = {},
 ): Promise<ProcessResult> {
   const { check = false, diff = false, prefixOverride, suffixOverride } = options;
   const text = await Deno.readTextFile(path);
-
-  // Binary files produce replacement characters and NUL bytes; skip them.
   if (text.includes("\u0000")) {
     return {
       path,
@@ -443,37 +362,34 @@ export async function processFile(
     prefix: prefixOverride ?? auto.prefix,
     suffix: suffixOverride ?? auto.suffix,
   };
-
   const directives = collectDirectives(text, syntax);
 
-  // Execute directives in order and collect the captured outputs.
   const outputs: string[] = [];
   let error: string | undefined;
   let exitCode = 0;
-  for (const directive of directives) {
-    if (directive.malformed) {
+  for (const d of directives) {
+    if (d.malformed) {
       const closing = syntax.suffix
         ? `${syntax.prefix} /cmd ${syntax.suffix}`
         : `${syntax.prefix} /cmd`;
-      error = `cmd block at line ${directive.line} has no closing \`${closing}\` comment`;
+      error = `cmd block at line ${d.line} has no closing \`${closing}\` comment`;
       exitCode = 1;
       break;
     }
-    if (directive.kind === "run") {
-      const code = await runCommandStreamed(directive.command);
+    if (d.kind === "run") {
+      const code = await runCommandStreamed(d.command);
       if (code !== 0) {
-        error = `cmd! directive at line ${directive.line} failed (exit code ${code}): ` +
-          directive.command;
+        error = `cmd! directive at line ${d.line} failed (exit code ${code}): ${d.command}`;
         exitCode = code || 1;
         break;
       }
       outputs.push("");
     } else {
-      const result = await runCommand(directive.command);
+      const result = await runCommand(d.command);
       if (result.code !== 0) {
         const detail = result.stderr.trimEnd();
-        error = `cmd block at line ${directive.line} failed (exit code ${result.code}): ` +
-          directive.command + (detail ? `\n${detail}` : "");
+        error = `cmd block at line ${d.line} failed (exit code ${result.code}): ${d.command}` +
+          (detail ? `\n${detail}` : "");
         exitCode = result.code || 1;
         break;
       }
@@ -493,30 +409,23 @@ export async function processFile(
     };
   }
 
-  // Apply block injections right-to-left so character indices stay valid.
-  // The blank lines around the current content are preserved so that
-  // external formatters (deno fmt, prettier) cannot fight commentsh over
-  // spacing — only the actual output lines are replaced.
+  // Apply inject blocks right-to-left so indices stay valid. The blank lines
+  // around the old content are kept so formatters never fight commentsh.
   let updated = text;
   for (let i = directives.length - 1; i >= 0; i--) {
-    const directive = directives[i];
-    if (directive.kind !== "inject" || directive.endTagStart === undefined) {
+    const d = directives[i];
+    if (d.kind !== "inject" || d.endTagStart === undefined || d.endTagStart < d.contentStart) {
       continue;
     }
-    // Defensive: never inject when the tags overlap (should not happen).
-    if (directive.endTagStart < directive.contentStart) continue;
-    const content = updated.slice(directive.contentStart, directive.endTagStart);
+    const content = updated.slice(d.contentStart, d.endTagStart);
     const layout = /^(\s*)([\s\S]*?)(\s*)$/.exec(content) ?? ["", "", "", ""];
     const injected = (layout[1] ?? "") + outputs[i] + (layout[3] ?? "");
-    updated = updated.slice(0, directive.contentStart) + injected +
-      updated.slice(directive.endTagStart);
+    updated = updated.slice(0, d.contentStart) + injected + updated.slice(d.endTagStart);
   }
 
   const changed = updated !== text;
   const diffText = diff && changed ? unifiedDiff(text, updated, path) : undefined;
-  if (changed && !check && !diff) {
-    await Deno.writeTextFile(path, updated);
-  }
+  if (changed && !check && !diff) await Deno.writeTextFile(path, updated);
   return {
     path,
     changed,
@@ -532,28 +441,21 @@ export async function processFile(
 // Unified diff rendering
 // ---------------------------------------------------------------------------
 
-type DiffOp = { readonly kind: "eq" | "del" | "ins"; readonly text: string };
+type DiffOp = { kind: "eq" | "del" | "ins"; text: string };
 
-/** Split into lines, dropping the phantom line from a trailing newline. */
 function splitLines(text: string): string[] {
   const lines = text.split("\n");
   if (lines.length > 1 && lines[lines.length - 1] === "") lines.pop();
   return lines;
 }
 
-/**
- * Compute a line-based edit script between two texts using LCS dynamic
- * programming. Falls back to a coarse prefix/suffix diff on very large
- * inputs so memory stays bounded.
- */
+/** Line edit script via LCS; coarse prefix/suffix fallback on huge inputs. */
 function computeDiff(a: string[], b: string[]): DiffOp[] {
   const n = a.length;
   const m = b.length;
   if (n * m > 4_000_000) return coarseDiff(a, b);
   if (n === 0) return b.map((text) => ({ kind: "ins", text }));
   if (m === 0) return a.map((text) => ({ kind: "del", text }));
-
-  // LCS lengths in a flat matrix, then backtrack into an edit script.
   const width = m + 1;
   const dp = new Uint32Array((n + 1) * width);
   for (let i = n - 1; i >= 0; i--) {
@@ -591,43 +493,28 @@ function coarseDiff(a: string[], b: string[]): DiffOp[] {
   while (
     suffix < a.length - prefix && suffix < b.length - prefix &&
     a[a.length - 1 - suffix] === b[b.length - 1 - suffix]
-  ) {
-    suffix++;
-  }
+  ) suffix++;
   const ops: DiffOp[] = [];
-  for (let i = prefix; i < a.length - suffix; i++) {
-    ops.push({ kind: "del", text: a[i] });
-  }
-  for (let i = prefix; i < b.length - suffix; i++) {
-    ops.push({ kind: "ins", text: b[i] });
-  }
+  for (let i = prefix; i < a.length - suffix; i++) ops.push({ kind: "del", text: a[i] });
+  for (let i = prefix; i < b.length - suffix; i++) ops.push({ kind: "ins", text: b[i] });
   return ops;
 }
 
-interface DiffHunk {
-  readonly oldStart: number;
-  readonly oldCount: number;
-  readonly newStart: number;
-  readonly newCount: number;
-  readonly ops: DiffOp[];
-}
-
-/** Group an edit script into hunks with surrounding context lines. */
-function buildHunks(ops: DiffOp[], context = 3): DiffHunk[] {
+/** Render a git-style unified diff for one file. */
+export function unifiedDiff(original: string, updated: string, path: string): string {
+  const ops = computeDiff(splitLines(original), splitLines(updated));
   const changes: number[] = [];
-  for (let i = 0; i < ops.length; i++) {
-    if (ops[i].kind !== "eq") changes.push(i);
-  }
-  if (changes.length === 0) return [];
+  for (let i = 0; i < ops.length; i++) if (ops[i].kind !== "eq") changes.push(i);
+  if (changes.length === 0) return "";
 
+  const context = 3;
   const ranges: Array<[number, number]> = [];
   let lo = changes[0];
   let hi = changes[0];
   for (let k = 1; k < changes.length; k++) {
     const idx = changes[k];
-    if (idx - hi <= 2 * context + 1) {
-      hi = idx;
-    } else {
+    if (idx - hi <= 2 * context + 1) hi = idx;
+    else {
       ranges.push([lo, hi]);
       lo = idx;
       hi = idx;
@@ -635,7 +522,7 @@ function buildHunks(ops: DiffOp[], context = 3): DiffHunk[] {
   }
   ranges.push([lo, hi]);
 
-  const hunks: DiffHunk[] = [];
+  const lines: string[] = [`diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`];
   for (const [start, end] of ranges) {
     const from = Math.max(0, start - context);
     const to = Math.min(ops.length - 1, end + context);
@@ -654,26 +541,9 @@ function buildHunks(ops: DiffOp[], context = 3): DiffHunk[] {
     }
     if (oldCount === 0) oldStart = Math.max(0, oldStart - 1);
     if (newCount === 0) newStart = Math.max(0, newStart - 1);
-    hunks.push({ oldStart, oldCount, newStart, newCount, ops: sub });
-  }
-  return hunks;
-}
-
-/** Render a standard unified diff for a single file (git-style header). */
-export function unifiedDiff(original: string, updated: string, path: string): string {
-  const ops = computeDiff(splitLines(original), splitLines(updated));
-  const hunks = buildHunks(ops);
-  if (hunks.length === 0) return "";
-  const lines: string[] = [
-    `diff --git a/${path} b/${path}`,
-    `--- a/${path}`,
-    `+++ b/${path}`,
-  ];
-  for (const hunk of hunks) {
-    lines.push(`@@ -${hunk.oldStart},${hunk.oldCount} +${hunk.newStart},${hunk.newCount} @@`);
-    for (const op of hunk.ops) {
-      const marker = op.kind === "eq" ? " " : op.kind === "del" ? "-" : "+";
-      lines.push(`${marker}${op.text}`);
+    lines.push(`@@ -${oldStart},${oldCount} +${newStart},${newCount} @@`);
+    for (const op of sub) {
+      lines.push(`${op.kind === "eq" ? " " : op.kind === "del" ? "-" : "+"}${op.text}`);
     }
   }
   return lines.join("\n");
@@ -683,8 +553,7 @@ export function unifiedDiff(original: string, updated: string, path: string): st
 // Directory walking
 // ---------------------------------------------------------------------------
 
-/** Directories that are never descended into when walking a path. */
-const SKIPPED_DIRECTORIES = new Set([
+const SKIPPED = new Set([
   ".git",
   ".hg",
   ".svn",
@@ -705,19 +574,18 @@ const SKIPPED_DIRECTORIES = new Set([
   "out",
 ]);
 
-async function* walkDirectory(directory: string): AsyncGenerator<string> {
-  for await (const entry of Deno.readDir(directory)) {
-    const path = `${directory}/${entry.name}`;
+async function* walkDirectory(dir: string): AsyncGenerator<string> {
+  for await (const entry of Deno.readDir(dir)) {
+    const path = `${dir}/${entry.name}`;
     if (entry.isDirectory) {
-      if (SKIPPED_DIRECTORIES.has(entry.name)) continue;
-      yield* walkDirectory(path);
+      if (!SKIPPED.has(entry.name)) yield* walkDirectory(path);
     } else if (entry.isFile) {
       yield path;
     }
   }
 }
 
-/** Expand a list of file and directory paths into a flat list of files. */
+/** Expand files and directories into a flat file list. */
 export async function collectFiles(paths: string[]): Promise<string[]> {
   const files: string[] = [];
   for (const path of paths) {
@@ -725,16 +593,11 @@ export async function collectFiles(paths: string[]): Promise<string[]> {
     try {
       info = await Deno.stat(path);
     } catch (err) {
-      throw new Error(
-        `cannot access ${path}: ${err instanceof Error ? err.message : String(err)}`,
-      );
+      throw new Error(`cannot access ${path}: ${err instanceof Error ? err.message : String(err)}`);
     }
-    if (info.isFile) {
-      files.push(path);
-    } else if (info.isDirectory) {
-      for await (const entry of walkDirectory(path)) {
-        files.push(entry);
-      }
+    if (info.isFile) files.push(path);
+    else if (info.isDirectory) {
+      for await (const entry of walkDirectory(path)) files.push(entry);
     }
   }
   return files;
@@ -759,7 +622,6 @@ export type CliAction =
   | { readonly kind: "version" }
   | { readonly kind: "error"; readonly message: string };
 
-/** Parse command-line arguments. */
 export function parseArgs(args: string[]): CliAction {
   const options: CliOptions = {
     check: false,
@@ -798,23 +660,17 @@ export function parseArgs(args: string[]): CliAction {
       case "--prefix":
       case "--suffix": {
         const value = args[++i];
-        if (value === undefined) {
-          return { kind: "error", message: `missing value for ${arg}` };
-        }
+        if (value === undefined) return { kind: "error", message: `missing value for ${arg}` };
         if (arg === "--prefix") options.prefix = value;
         else options.suffix = value;
         break;
       }
       default:
-        if (arg.startsWith("--prefix=")) {
-          options.prefix = arg.slice("--prefix=".length);
-        } else if (arg.startsWith("--suffix=")) {
-          options.suffix = arg.slice("--suffix=".length);
-        } else if (arg.startsWith("-") && arg !== "-") {
+        if (arg.startsWith("--prefix=")) options.prefix = arg.slice("--prefix=".length);
+        else if (arg.startsWith("--suffix=")) options.suffix = arg.slice("--suffix=".length);
+        else if (arg.startsWith("-") && arg !== "-") {
           return { kind: "error", message: `unknown option: ${arg}` };
-        } else {
-          options.files.push(arg);
-        }
+        } else options.files.push(arg);
     }
   }
   if (options.watch && options.check) {
@@ -826,7 +682,6 @@ export function parseArgs(args: string[]): CliAction {
   return { kind: "run", options };
 }
 
-/** The help text shown by `--help`. */
 export function helpText(): string {
   return `commentsh ${VERSION} — Comment Shell
 Run shell commands from inside code comments.
@@ -887,7 +742,6 @@ EXAMPLES:
 See https://github.com/EthanThatOneKid/commentsh for more information.`;
 }
 
-/** CLI entry point. */
 export async function main(): Promise<void> {
   const action = parseArgs(Deno.args);
   switch (action.kind) {
@@ -915,7 +769,6 @@ async function runCli(options: CliOptions): Promise<void> {
     await runWatch(options);
     return;
   }
-
   let files: string[];
   try {
     files = await collectFiles(options.files);
@@ -927,7 +780,6 @@ async function runCli(options: CliOptions): Promise<void> {
   const { changed, errors, firstExitCode } = await processFileList(files, options);
 
   if (options.diff) {
-    // The diffs themselves are the output; keep stdout clean for piping.
     if (errors > 0) console.error(`commentsh: ${errors} error(s)`);
     else if (changed > 0) console.error(`commentsh: ${changed} file(s) would change`);
     let exitCode = firstExitCode;
@@ -938,15 +790,10 @@ async function runCli(options: CliOptions): Promise<void> {
   if (options.check) {
     if (errors === 0 && changed === 0) {
       console.log(`commentsh: all ${files.length} file(s) up to date`);
-    } else {
-      console.error(
-        `commentsh: ${errors} error(s), ${changed} file(s) out of date`,
-      );
-    }
+    } else console.error(`commentsh: ${errors} error(s), ${changed} file(s) out of date`);
   } else {
     console.log(
-      `commentsh: ${files.length} file(s) processed, ${changed} updated, ` +
-        `${errors} error(s)`,
+      `commentsh: ${files.length} file(s) processed, ${changed} updated, ${errors} error(s)`,
     );
   }
 
@@ -955,17 +802,7 @@ async function runCli(options: CliOptions): Promise<void> {
   Deno.exit(exitCode);
 }
 
-interface FileListSummary {
-  readonly changed: number;
-  readonly errors: number;
-  readonly firstExitCode: number;
-}
-
-/** Process a list of files, printing per-file results; returns counts. */
-async function processFileList(
-  files: string[],
-  options: CliOptions,
-): Promise<FileListSummary> {
+async function processFileList(files: string[], options: CliOptions) {
   let changed = 0;
   let errors = 0;
   let firstExitCode = 0;
@@ -979,9 +816,7 @@ async function processFileList(
         suffixOverride: options.suffix,
       });
     } catch (err) {
-      console.error(
-        `commentsh: ${file}: ${err instanceof Error ? err.message : String(err)}`,
-      );
+      console.error(`commentsh: ${file}: ${err instanceof Error ? err.message : String(err)}`);
       errors++;
       firstExitCode ||= 1;
       continue;
@@ -1012,7 +847,6 @@ async function processFileList(
 // Watch mode
 // ---------------------------------------------------------------------------
 
-/** Debounce a function: only the last call within `ms` milliseconds runs. */
 export function debounce(fn: () => void, ms: number): () => void {
   let timer: ReturnType<typeof setTimeout> | undefined;
   return () => {
@@ -1024,34 +858,26 @@ export function debounce(fn: () => void, ms: number): () => void {
   };
 }
 
-/** Drop paths that live inside a skipped directory (node_modules, .git, …). */
+/** Drop paths inside skipped directories (node_modules, .git, …). */
 export function filterWatchPaths(paths: string[]): string[] {
-  return paths.filter((path) => {
-    const segments = path.split(/[\\/]/);
-    return !segments.some((segment) => segment !== "" && SKIPPED_DIRECTORIES.has(segment));
-  });
+  return paths.filter((path) =>
+    !path.split(/[\\/]/).some((segment) => segment !== "" && SKIPPED.has(segment))
+  );
 }
 
-/**
- * Reprocess files whenever the watched paths change. Runs an initial pass,
- * then reacts to filesystem events until the process is interrupted.
- */
+/** Reprocess files on change; runs an initial pass, then reacts to fs events. */
 export async function runWatch(options: CliOptions): Promise<void> {
   const initial = await collectFiles(options.files).catch((err: unknown) => {
     console.error(`commentsh: ${err instanceof Error ? err.message : String(err)}`);
     Deno.exit(1);
   });
   await processFileList(initial, options);
-  console.log(
-    `commentsh: watching ${options.files.join(", ")} — press Ctrl-C to stop`,
-  );
+  console.log(`commentsh: watching ${options.files.join(", ")} — press Ctrl-C to stop`);
 
   const watcher = Deno.watchFs(options.files, { recursive: true });
   const pending = new Set<string>();
   let processing = false;
   const flush = debounce(async () => {
-    // Skip while a pass is in flight; the finishing pass re-schedules so
-    // edits made during processing are not dropped.
     if (processing) return;
     processing = true;
     const files: string[] = [];
@@ -1060,7 +886,7 @@ export async function runWatch(options: CliOptions): Promise<void> {
         const info = await Deno.stat(candidate);
         if (info.isFile) files.push(candidate);
       } catch {
-        // Path vanished (deleted or moved); nothing to process.
+        // Path vanished; nothing to process.
       }
     }
     pending.clear();
