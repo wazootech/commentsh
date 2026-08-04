@@ -93,16 +93,7 @@ Wire it into your task runner so developers never have to think about it:
 }
 ```
 
-### Previewing changes and watching
-
-`--diff` shows exactly what would change without writing anything — handy before committing
-generated docs. `--diff --check` also exits 1 when files are stale, so it doubles as a preview of
-what CI would complain about:
-
-```bash
-commentsh --diff README.md
-commentsh --diff --check README.md   # preview + fail like CI
-```
+### Watching
 
 `--watch` reprocesses files whenever they change on disk, keeping docs live while you edit:
 
@@ -111,6 +102,13 @@ commentsh --watch README.md
 ```
 
 ### Checking for stale docs in CI
+
+To preview what commentsh would change, run it and inspect the result with `git diff` before
+committing:
+
+```bash
+commentsh README.md && git diff --stat
+```
 
 `--check` runs every directive but refuses to write files, exiting with code 1 if anything would
 change. Fail the build whenever a developer changes command behavior but forgets to regenerate:
@@ -162,8 +160,6 @@ DESCRIPTION:
 OPTIONS:
       --check            Do not write files. Exit with code 1 if any file
                          would change. Use in CI to catch stale docs.
-      --diff             Do not write files. Print the changes as a unified
-                         diff instead.
       --watch            Reprocess files whenever they change on disk.
       --prefix <string>  Override the comment prefix (e.g. "--" for SQL).
       --suffix <string>  Override the comment suffix (e.g. "-->" for HTML).
@@ -181,7 +177,6 @@ EXAMPLES:
   commentsh README.md
   commentsh src docs
   commentsh --check .          # fail CI if any docs are stale
-  commentsh --diff README.md   # preview changes
   commentsh --watch README.md  # live-update while editing
   commentsh --prefix -- --suffix "" schema.sql
 
@@ -205,7 +200,6 @@ commentsh [OPTIONS] <FILE|DIR>...
 | Option              | Description                                                      |
 | ------------------- | ---------------------------------------------------------------- |
 | `--check`           | Do not write files; exit 1 if any file would change (use in CI). |
-| `--diff`            | Do not write files; print the changes as a unified diff instead. |
 | `--watch`           | Reprocess files whenever they change on disk.                    |
 | `--prefix <string>` | Override the auto-detected comment prefix (e.g. `--` for SQL).   |
 | `--suffix <string>` | Override the auto-detected comment suffix (e.g. `-->` for HTML). |

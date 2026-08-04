@@ -108,7 +108,6 @@ export interface Directive {
   readonly line: number;
   readonly contentStart: number;
   readonly endTagStart: number | undefined;
-  readonly hasEndTag: boolean;
   readonly malformed: boolean;
 }
 
@@ -234,7 +233,6 @@ export function collectDirectives(text: string, syntax: CommentSyntax): Directiv
         line: t.line,
         contentStart: t.end,
         endTagStart: undefined,
-        hasEndTag: false,
         malformed: false,
       });
     } else if (t.type === "inject") {
@@ -246,7 +244,6 @@ export function collectDirectives(text: string, syntax: CommentSyntax): Directiv
           line: open.line,
           contentStart: open.end,
           endTagStart: undefined,
-          hasEndTag: false,
           malformed: true,
         });
       }
@@ -258,7 +255,6 @@ export function collectDirectives(text: string, syntax: CommentSyntax): Directiv
         line: open.line,
         contentStart: open.end,
         endTagStart: t.start,
-        hasEndTag: true,
         malformed: false,
       });
       open = undefined;
@@ -272,7 +268,6 @@ export function collectDirectives(text: string, syntax: CommentSyntax): Directiv
       line: open.line,
       contentStart: open.end,
       endTagStart: undefined,
-      hasEndTag: false,
       malformed: true,
     });
   }
@@ -295,26 +290,21 @@ export interface CommandResult {
   readonly code: number;
 }
 
-/** Run a command, capturing stdout/stderr. */
-export async function runCommand(command: string): Promise<CommandResult> {
+/** Run a command, capturing output, or streaming it to the terminal. */
+// stream mode discards stdout/stderr (empty strings) and returns only the exit code.
+export async function runCommand(command: string, stream = false): Promise<CommandResult> {
   const [shell, args] = shellInvocation(command);
-  const { stdout, stderr, code } = await new Deno.Command(shell, {
+  const out = await new Deno.Command(shell, {
     args,
-    stdout: "piped",
-    stderr: "piped",
+    stdout: stream ? "inherit" : "piped",
+    stderr: stream ? "inherit" : "piped",
   }).output();
+  if (stream) return { stdout: "", stderr: "", code: out.code };
   return {
-    stdout: new TextDecoder().decode(stdout),
-    stderr: new TextDecoder().decode(stderr),
-    code,
+    stdout: new TextDecoder().decode(out.stdout),
+    stderr: new TextDecoder().decode(out.stderr),
+    code: out.code,
   };
-}
-
-/** Run a command, streaming output to the terminal. */
-export async function runCommandStreamed(command: string): Promise<number> {
-  const [shell, args] = shellInvocation(command);
-  return (await new Deno.Command(shell, { args, stdout: "inherit", stderr: "inherit" }).output())
-    .code;
 }
 
 // ---------------------------------------------------------------------------
@@ -323,7 +313,6 @@ export async function runCommandStreamed(command: string): Promise<number> {
 
 export interface ProcessOptions {
   readonly check?: boolean;
-  readonly diff?: boolean;
   readonly prefixOverride?: string;
   readonly suffixOverride?: string;
 }
@@ -335,7 +324,6 @@ export interface ProcessResult {
   readonly skipped: boolean;
   readonly error: string | undefined;
   readonly exitCode: number;
-  readonly diff: string | undefined;
 }
 
 /** Execute a file's directives; write back when an inject block changed. */
@@ -343,7 +331,7 @@ export async function processFile(
   path: string,
   options: ProcessOptions = {},
 ): Promise<ProcessResult> {
-  const { check = false, diff = false, prefixOverride, suffixOverride } = options;
+  const { check = false, prefixOverride, suffixOverride } = options;
   const text = await Deno.readTextFile(path);
   if (text.includes("\u0000")) {
     return {
@@ -353,7 +341,6 @@ export async function processFile(
       skipped: true,
       error: undefined,
       exitCode: 0,
-      diff: undefined,
     };
   }
 
@@ -377,7 +364,7 @@ export async function processFile(
       break;
     }
     if (d.kind === "run") {
-      const code = await runCommandStreamed(d.command);
+      const code = (await runCommand(d.command, true)).code;
       if (code !== 0) {
         error = `cmd! directive at line ${d.line} failed (exit code ${code}): ${d.command}`;
         exitCode = code || 1;
@@ -405,7 +392,6 @@ export async function processFile(
       skipped: false,
       error,
       exitCode,
-      diff: undefined,
     };
   }
 
@@ -424,8 +410,7 @@ export async function processFile(
   }
 
   const changed = updated !== text;
-  const diffText = diff && changed ? unifiedDiff(text, updated, path) : undefined;
-  if (changed && !check && !diff) await Deno.writeTextFile(path, updated);
+  if (changed && !check) await Deno.writeTextFile(path, updated);
   return {
     path,
     changed,
@@ -433,120 +418,7 @@ export async function processFile(
     skipped: false,
     error: undefined,
     exitCode: 0,
-    diff: diffText,
   };
-}
-
-// ---------------------------------------------------------------------------
-// Unified diff rendering
-// ---------------------------------------------------------------------------
-
-type DiffOp = { kind: "eq" | "del" | "ins"; text: string };
-
-function splitLines(text: string): string[] {
-  const lines = text.split("\n");
-  if (lines.length > 1 && lines[lines.length - 1] === "") lines.pop();
-  return lines;
-}
-
-/** Line edit script via LCS; coarse prefix/suffix fallback on huge inputs. */
-function computeDiff(a: string[], b: string[]): DiffOp[] {
-  const n = a.length;
-  const m = b.length;
-  if (n * m > 4_000_000) return coarseDiff(a, b);
-  if (n === 0) return b.map((text) => ({ kind: "ins", text }));
-  if (m === 0) return a.map((text) => ({ kind: "del", text }));
-  const width = m + 1;
-  const dp = new Uint32Array((n + 1) * width);
-  for (let i = n - 1; i >= 0; i--) {
-    for (let j = m - 1; j >= 0; j--) {
-      dp[i * width + j] = a[i] === b[j]
-        ? dp[(i + 1) * width + j + 1] + 1
-        : Math.max(dp[(i + 1) * width + j], dp[i * width + j + 1]);
-    }
-  }
-  const ops: DiffOp[] = [];
-  let i = 0;
-  let j = 0;
-  while (i < n && j < m) {
-    if (a[i] === b[j]) {
-      ops.push({ kind: "eq", text: a[i] });
-      i++;
-      j++;
-    } else if (dp[(i + 1) * width + j] >= dp[i * width + j + 1]) {
-      ops.push({ kind: "del", text: a[i] });
-      i++;
-    } else {
-      ops.push({ kind: "ins", text: b[j] });
-      j++;
-    }
-  }
-  while (i < n) ops.push({ kind: "del", text: a[i++] });
-  while (j < m) ops.push({ kind: "ins", text: b[j++] });
-  return ops;
-}
-
-function coarseDiff(a: string[], b: string[]): DiffOp[] {
-  let prefix = 0;
-  while (prefix < a.length && prefix < b.length && a[prefix] === b[prefix]) prefix++;
-  let suffix = 0;
-  while (
-    suffix < a.length - prefix && suffix < b.length - prefix &&
-    a[a.length - 1 - suffix] === b[b.length - 1 - suffix]
-  ) suffix++;
-  const ops: DiffOp[] = [];
-  for (let i = prefix; i < a.length - suffix; i++) ops.push({ kind: "del", text: a[i] });
-  for (let i = prefix; i < b.length - suffix; i++) ops.push({ kind: "ins", text: b[i] });
-  return ops;
-}
-
-/** Render a git-style unified diff for one file. */
-export function unifiedDiff(original: string, updated: string, path: string): string {
-  const ops = computeDiff(splitLines(original), splitLines(updated));
-  const changes: number[] = [];
-  for (let i = 0; i < ops.length; i++) if (ops[i].kind !== "eq") changes.push(i);
-  if (changes.length === 0) return "";
-
-  const context = 3;
-  const ranges: Array<[number, number]> = [];
-  let lo = changes[0];
-  let hi = changes[0];
-  for (let k = 1; k < changes.length; k++) {
-    const idx = changes[k];
-    if (idx - hi <= 2 * context + 1) hi = idx;
-    else {
-      ranges.push([lo, hi]);
-      lo = idx;
-      hi = idx;
-    }
-  }
-  ranges.push([lo, hi]);
-
-  const lines: string[] = [`diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`];
-  for (const [start, end] of ranges) {
-    const from = Math.max(0, start - context);
-    const to = Math.min(ops.length - 1, end + context);
-    const sub = ops.slice(from, to + 1);
-    let oldCount = 0;
-    let newCount = 0;
-    for (const op of sub) {
-      if (op.kind !== "ins") oldCount++;
-      if (op.kind !== "del") newCount++;
-    }
-    let oldStart = 1;
-    let newStart = 1;
-    for (let k = 0; k < from; k++) {
-      if (ops[k].kind !== "ins") oldStart++;
-      if (ops[k].kind !== "del") newStart++;
-    }
-    if (oldCount === 0) oldStart = Math.max(0, oldStart - 1);
-    if (newCount === 0) newStart = Math.max(0, newStart - 1);
-    lines.push(`@@ -${oldStart},${oldCount} +${newStart},${newCount} @@`);
-    for (const op of sub) {
-      lines.push(`${op.kind === "eq" ? " " : op.kind === "del" ? "-" : "+"}${op.text}`);
-    }
-  }
-  return lines.join("\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -609,7 +481,6 @@ export async function collectFiles(paths: string[]): Promise<string[]> {
 
 export interface CliOptions {
   check: boolean;
-  diff: boolean;
   watch: boolean;
   prefix: string | undefined;
   suffix: string | undefined;
@@ -625,7 +496,6 @@ export type CliAction =
 export function parseArgs(args: string[]): CliAction {
   const options: CliOptions = {
     check: false,
-    diff: false,
     watch: false,
     prefix: undefined,
     suffix: undefined,
@@ -651,9 +521,6 @@ export function parseArgs(args: string[]): CliAction {
       case "--check":
         options.check = true;
         break;
-      case "--diff":
-        options.diff = true;
-        break;
       case "--watch":
         options.watch = true;
         break;
@@ -666,9 +533,7 @@ export function parseArgs(args: string[]): CliAction {
         break;
       }
       default:
-        if (arg.startsWith("--prefix=")) options.prefix = arg.slice("--prefix=".length);
-        else if (arg.startsWith("--suffix=")) options.suffix = arg.slice("--suffix=".length);
-        else if (arg.startsWith("-") && arg !== "-") {
+        if (arg.startsWith("-") && arg !== "-") {
           return { kind: "error", message: `unknown option: ${arg}` };
         } else options.files.push(arg);
     }
@@ -710,8 +575,6 @@ DESCRIPTION:
 OPTIONS:
       --check            Do not write files. Exit with code 1 if any file
                          would change. Use in CI to catch stale docs.
-      --diff             Do not write files. Print the changes as a unified
-                         diff instead.
       --watch            Reprocess files whenever they change on disk.
       --prefix <string>  Override the comment prefix (e.g. "--" for SQL).
       --suffix <string>  Override the comment suffix (e.g. "-->" for HTML).
@@ -729,7 +592,6 @@ EXAMPLES:
   commentsh README.md
   commentsh src docs
   commentsh --check .          # fail CI if any docs are stale
-  commentsh --diff README.md   # preview changes
   commentsh --watch README.md  # live-update while editing
   commentsh --prefix -- --suffix "" schema.sql
 
@@ -779,14 +641,6 @@ async function runCli(options: CliOptions): Promise<void> {
 
   const { changed, errors, firstExitCode } = await processFileList(files, options);
 
-  if (options.diff) {
-    if (errors > 0) console.error(`commentsh: ${errors} error(s)`);
-    else if (changed > 0) console.error(`commentsh: ${changed} file(s) would change`);
-    let exitCode = firstExitCode;
-    if (options.check && changed > 0 && exitCode === 0) exitCode = 1;
-    Deno.exit(exitCode);
-  }
-
   if (options.check) {
     if (errors === 0 && changed === 0) {
       console.log(`commentsh: all ${files.length} file(s) up to date`);
@@ -811,7 +665,6 @@ async function processFileList(files: string[], options: CliOptions) {
     try {
       result = await processFile(file, {
         check: options.check,
-        diff: options.diff,
         prefixOverride: options.prefix,
         suffixOverride: options.suffix,
       });
@@ -830,10 +683,7 @@ async function processFileList(files: string[], options: CliOptions) {
     }
     if (result.changed) {
       changed++;
-      if (result.diff !== undefined) {
-        console.log(result.diff);
-        console.log("");
-      } else if (options.check) {
+      if (options.check) {
         console.log(`out of date: ${file}`);
       } else {
         console.log(`updated: ${file}`);

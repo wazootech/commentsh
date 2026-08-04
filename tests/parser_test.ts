@@ -22,7 +22,7 @@ Deno.test("finds an inject block in markdown", () => {
   assertEquals(directives[0].kind, "inject");
   assertEquals(directives[0].command, "echo hello");
   assertEquals(directives[0].malformed, false);
-  assertEquals(directives[0].hasEndTag, true);
+  assertEquals(directives[0].endTagStart !== undefined, true);
   assertEquals(directives[0].line, 3);
 });
 
@@ -52,7 +52,7 @@ Deno.test("cmd! side effects need no closing tag and are never malformed", () =>
   assertEquals(directives[0].kind, "run");
   assertEquals(directives[0].command, "echo hi");
   assertEquals(directives[0].malformed, false);
-  assertEquals(directives[0].hasEndTag, false);
+  assertEquals(directives[0].endTagStart, undefined);
 });
 
 Deno.test("ignores directives that do not start a line", () => {
@@ -65,7 +65,7 @@ Deno.test("flags inject blocks without a closing tag as malformed", () => {
   const directives = collectDirectives(text, MD);
   assertEquals(directives.length, 1);
   assertEquals(directives[0].malformed, true);
-  assertEquals(directives[0].hasEndTag, false);
+  assertEquals(directives[0].endTagStart, undefined);
 });
 
 Deno.test("parses cmd! directives with // comments", () => {
