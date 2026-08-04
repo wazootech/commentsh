@@ -60,7 +60,7 @@ Deno.test("processFile with diff option returns a diff and does not write", asyn
   try {
     await Deno.writeTextFile(
       path,
-      "<!-- exec: echo hello -->\nstale\n<!-- /exec -->\n",
+      "<!-- cmd: echo hello -->\nstale\n<!-- /cmd -->\n",
     );
     const result = await processFile(path, { diff: true });
     assertEquals(result.changed, true);
@@ -70,7 +70,7 @@ Deno.test("processFile with diff option returns a diff and does not write", asyn
     // Nothing was written to disk.
     assertEquals(
       await Deno.readTextFile(path),
-      "<!-- exec: echo hello -->\nstale\n<!-- /exec -->\n",
+      "<!-- cmd: echo hello -->\nstale\n<!-- /cmd -->\n",
     );
   } finally {
     await Deno.remove(dir, { recursive: true });
@@ -83,7 +83,7 @@ Deno.test("processFile with diff on an up-to-date file has no diff", async () =>
   try {
     await Deno.writeTextFile(
       path,
-      "<!-- exec: echo hello -->\nhello\n<!-- /exec -->\n",
+      "<!-- cmd: echo hello -->\nhello\n<!-- /cmd -->\n",
     );
     const result = await processFile(path, { diff: true });
     assertEquals(result.changed, false);

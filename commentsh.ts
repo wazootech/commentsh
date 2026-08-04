@@ -3,8 +3,8 @@
  *
  * Run shell commands from inside code comments. commentsh scans text files
  * for comment directives, executes the referenced commands, and either
- * injects their stdout back into the file (`exec:` blocks) or runs them as
- * side effects (`run:` directives).
+ * injects their stdout back into the file (`cmd:` blocks) or runs them as
+ * side effects (`cmd!:` directives).
  *
  * Run it from this repo:
  *
@@ -19,7 +19,7 @@
  * @module
  */
 
-export const VERSION = "0.1.0";
+export const VERSION = "0.2.0";
 
 // ---------------------------------------------------------------------------
 // Comment syntax detection
@@ -126,86 +126,163 @@ export function syntaxForPath(path: string): CommentSyntax {
 // ---------------------------------------------------------------------------
 
 export interface Directive {
-  /** `exec` blocks inject stdout; `run` directives execute as side effects. */
-  readonly kind: "exec" | "run";
+  /** `inject` blocks write stdout into the file; `run` directives are `cmd!` side effects. */
+  readonly kind: "inject" | "run";
   readonly command: string;
   /** 1-based line number of the directive in the file. */
   readonly line: number;
   /** Character index just past the opening comment. */
   readonly contentStart: number;
-  /** Character index where the closing comment begins (exec blocks only). */
+  /** Character index where the closing comment begins (inject blocks only). */
   readonly endTagStart: number | undefined;
   /** True when the directive has a closing comment. */
   readonly hasEndTag: boolean;
-  /** True when an exec block is missing its closing comment. */
+  /** True when an inject block is missing its closing comment. */
   readonly malformed: boolean;
-}
-
-function escapeRegExp(text: string): string {
-  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-function lineNumberAt(text: string, index: number): number {
-  let line = 1;
-  for (let i = 0; i < index; i++) {
-    if (text[i] === "\n") line++;
-  }
-  return line;
 }
 
 /** A raw directive line found while scanning a file. */
 interface ParsedToken {
-  readonly type: "exec" | "run" | "end";
+  readonly type: "inject" | "run" | "end";
   readonly command: string | undefined;
   readonly start: number;
   readonly end: number;
   readonly line: number;
 }
 
+function isSpace(char: string): boolean {
+  return char === " " || char === "\t" || char === "\r" || char === "\f" ||
+    char === "\v";
+}
+
+/**
+ * True when a directive terminator follows at `from`: either the comment
+ * suffix (HTML-style) or, for line comments, the end of the line.
+ */
+function terminatorMatches(
+  content: string,
+  from: number,
+  suffix: string,
+): boolean {
+  if (suffix === "") return from === content.length;
+  let j = from;
+  while (j < content.length && isSpace(content[j])) j++;
+  return content.startsWith(suffix, j);
+}
+
+/**
+ * Extract the command after a directive's colon, validating the terminator.
+ * The command runs to the comment suffix (HTML-style) or the end of the
+ * line, with surrounding whitespace trimmed.
+ */
+function scanCommand(
+  content: string,
+  from: number,
+  suffix: string,
+): { readonly command: string; readonly commentEnd: number } | undefined {
+  let i = from;
+  while (i < content.length && isSpace(content[i])) i++;
+  if (suffix === "") {
+    let end = content.length;
+    while (end > i && isSpace(content[end - 1])) end--;
+    return { command: content.slice(i, end), commentEnd: content.length };
+  }
+  const end = content.indexOf(suffix, i);
+  if (end === -1) return undefined;
+  let commandEnd = end;
+  while (commandEnd > i && isSpace(content[commandEnd - 1])) commandEnd--;
+  return {
+    command: content.slice(i, commandEnd),
+    commentEnd: end + suffix.length,
+  };
+}
+
+/**
+ * Scan one line for a directive token using hand-written character scanning
+ * (no regular expressions), so comment prefixes, keywords, and terminators
+ * are matched exactly.
+ */
+function scanLine(
+  content: string,
+  lineStart: number,
+  lineNumber: number,
+  syntax: CommentSyntax,
+): ParsedToken | undefined {
+  const { prefix, suffix } = syntax;
+  let i = 0;
+  while (i < content.length && isSpace(content[i])) i++;
+  if (!content.startsWith(prefix, i)) return undefined;
+  i += prefix.length;
+  while (i < content.length && isSpace(content[i])) i++;
+
+  // Closing tag: `<prefix> /cmd <terminator>`.
+  if (content.startsWith("/cmd", i)) {
+    const after = i + 4;
+    if (terminatorMatches(content, after, suffix)) {
+      return {
+        type: "end",
+        command: undefined,
+        start: lineStart,
+        end: lineStart + after,
+        line: lineNumber,
+      };
+    }
+    return undefined;
+  }
+
+  // Opening tag: `<prefix> cmd [!] : <command> <terminator>`.
+  if (content.startsWith("cmd", i)) {
+    let k = i + 3;
+    const bang = content[k] === "!";
+    if (bang) k++;
+    if (content[k] !== ":") return undefined;
+    const command = scanCommand(content, k + 1, suffix);
+    if (command === undefined) return undefined;
+    return {
+      type: bang ? "run" : "inject",
+      command: command.command,
+      start: lineStart,
+      end: lineStart + command.commentEnd,
+      line: lineNumber,
+    };
+  }
+  return undefined;
+}
+
+/** Collect every directive token in a file, in line order. */
+function scanTokens(text: string, syntax: CommentSyntax): ParsedToken[] {
+  const tokens: ParsedToken[] = [];
+  let lineStart = 0;
+  let lineNumber = 1;
+  while (lineStart <= text.length) {
+    const nl = text.indexOf("\n", lineStart);
+    const lineEnd = nl === -1 ? text.length : nl;
+    let content = text.slice(lineStart, lineEnd);
+    if (content.endsWith("\r")) content = content.slice(0, -1);
+    const token = scanLine(content, lineStart, lineNumber, syntax);
+    if (token !== undefined) tokens.push(token);
+    if (nl === -1) break;
+    lineStart = nl + 1;
+    lineNumber++;
+  }
+  return tokens;
+}
+
 /**
  * Find every directive in a file's text.
  *
  * Directives are scanned as raw tokens (opening tags, closing tags, and
- * `run:` lines) and then paired up in file order. Anything that appears
- * between an `exec:` opening tag and its `/exec` closing tag is treated as
+ * `cmd!:` lines) and then paired up in file order. Anything that appears
+ * between a `cmd:` opening tag and its `/cmd` closing tag is treated as
  * block content, never as a directive in its own right.
  */
 export function collectDirectives(text: string, syntax: CommentSyntax): Directive[] {
-  const p = escapeRegExp(syntax.prefix);
-  const terminator = syntax.suffix ? `\\s*${escapeRegExp(syntax.suffix)}` : `(?=\\r?\\n|$)`;
-  const startPattern = new RegExp(
-    `^(\\s*)(${p})\\s*(exec|run):\\s*(.+?)${terminator}`,
-    "gm",
-  );
-  const endPattern = new RegExp(`^(\\s*)(${p})\\s*\\/exec${terminator}`, "gm");
-
-  const tokens: ParsedToken[] = [];
-  for (const match of text.matchAll(startPattern)) {
-    tokens.push({
-      type: match[3] === "run" ? "run" : "exec",
-      command: match[4].trim(),
-      start: match.index,
-      end: match.index + match[0].length,
-      // The line where the comment itself starts, past any leading whitespace.
-      line: lineNumberAt(text, match.index + (match[1]?.length ?? 0)),
-    });
-  }
-  for (const match of text.matchAll(endPattern)) {
-    tokens.push({
-      type: "end",
-      command: undefined,
-      start: match.index,
-      end: match.index + match[0].length,
-      line: lineNumberAt(text, match.index + (match[1]?.length ?? 0)),
-    });
-  }
-  tokens.sort((a, b) => a.start - b.start);
-
+  const tokens = scanTokens(text, syntax);
   const directives: Directive[] = [];
-  let pendingExec: ParsedToken | undefined;
+  let pendingBlock: ParsedToken | undefined;
   for (const token of tokens) {
     if (token.type === "run") {
-      if (pendingExec !== undefined) continue; // inside a block: it's content
+      if (pendingBlock !== undefined) continue; // inside a block: it's content
       directives.push({
         kind: "run",
         command: token.command ?? "",
@@ -215,44 +292,45 @@ export function collectDirectives(text: string, syntax: CommentSyntax): Directiv
         hasEndTag: false,
         malformed: false,
       });
-    } else if (token.type === "exec") {
-      if (pendingExec !== undefined) {
+    } else if (token.type === "inject") {
+      if (pendingBlock !== undefined) {
         // A second opening tag before the closing tag: the first is malformed.
         directives.push({
-          kind: "exec",
-          command: pendingExec.command ?? "",
-          line: pendingExec.line,
-          contentStart: pendingExec.end,
+          kind: "inject",
+          command: pendingBlock.command ?? "",
+          line: pendingBlock.line,
+          contentStart: pendingBlock.end,
           endTagStart: undefined,
           hasEndTag: false,
           malformed: true,
         });
       }
-      pendingExec = token;
+      pendingBlock = token;
     } else {
-      // Closing tag. Ignore it when it overlaps the opening tag (a command
-      // that happens to end in `/exec`, e.g. `<!-- exec: bash /exec -->`).
-      if (pendingExec !== undefined && token.start >= pendingExec.end) {
+      // Closing tag. The overlap check is defensive-only: the line tokenizer
+      // emits one token per line in file order, so a closing tag can never
+      // start inside an opening tag (e.g. a command ending in `/cmd`).
+      if (pendingBlock !== undefined && token.start >= pendingBlock.end) {
         directives.push({
-          kind: "exec",
-          command: pendingExec.command ?? "",
-          line: pendingExec.line,
-          contentStart: pendingExec.end,
+          kind: "inject",
+          command: pendingBlock.command ?? "",
+          line: pendingBlock.line,
+          contentStart: pendingBlock.end,
           endTagStart: token.start,
           hasEndTag: true,
           malformed: false,
         });
-        pendingExec = undefined;
+        pendingBlock = undefined;
       }
       // Overlapping or stray closing tags are ignored.
     }
   }
-  if (pendingExec !== undefined) {
+  if (pendingBlock !== undefined) {
     directives.push({
-      kind: "exec",
-      command: pendingExec.command ?? "",
-      line: pendingExec.line,
-      contentStart: pendingExec.end,
+      kind: "inject",
+      command: pendingBlock.command ?? "",
+      line: pendingBlock.line,
+      contentStart: pendingBlock.end,
       endTagStart: undefined,
       hasEndTag: false,
       malformed: true,
@@ -338,7 +416,7 @@ export interface ProcessResult {
 
 /**
  * Process one file: execute its directives and, unless `--check` is set,
- * write the file back when an exec block's injected content changed.
+ * write the file back when an inject block's content changed.
  */
 export async function processFile(
   path: string,
@@ -375,16 +453,16 @@ export async function processFile(
   for (const directive of directives) {
     if (directive.malformed) {
       const closing = syntax.suffix
-        ? `${syntax.prefix} /exec ${syntax.suffix}`
-        : `${syntax.prefix} /exec`;
-      error = `exec block at line ${directive.line} has no closing \`${closing}\` comment`;
+        ? `${syntax.prefix} /cmd ${syntax.suffix}`
+        : `${syntax.prefix} /cmd`;
+      error = `cmd block at line ${directive.line} has no closing \`${closing}\` comment`;
       exitCode = 1;
       break;
     }
     if (directive.kind === "run") {
       const code = await runCommandStreamed(directive.command);
       if (code !== 0) {
-        error = `run directive at line ${directive.line} failed (exit code ${code}): ` +
+        error = `cmd! directive at line ${directive.line} failed (exit code ${code}): ` +
           directive.command;
         exitCode = code || 1;
         break;
@@ -394,7 +472,7 @@ export async function processFile(
       const result = await runCommand(directive.command);
       if (result.code !== 0) {
         const detail = result.stderr.trimEnd();
-        error = `exec block at line ${directive.line} failed (exit code ${result.code}): ` +
+        error = `cmd block at line ${directive.line} failed (exit code ${result.code}): ` +
           directive.command + (detail ? `\n${detail}` : "");
         exitCode = result.code || 1;
         break;
@@ -415,14 +493,14 @@ export async function processFile(
     };
   }
 
-  // Apply exec injections right-to-left so character indices stay valid.
+  // Apply block injections right-to-left so character indices stay valid.
   // The blank lines around the current content are preserved so that
   // external formatters (deno fmt, prettier) cannot fight commentsh over
   // spacing — only the actual output lines are replaced.
   let updated = text;
   for (let i = directives.length - 1; i >= 0; i--) {
     const directive = directives[i];
-    if (directive.kind !== "exec" || directive.endTagStart === undefined) {
+    if (directive.kind !== "inject" || directive.endTagStart === undefined) {
       continue;
     }
     // Defensive: never inject when the tags overlap (should not happen).
@@ -762,13 +840,13 @@ DESCRIPTION:
   file's extension (or filename) and can be overridden with --prefix and
   --suffix. Directives must appear at the start of a line.
 
-  Two kinds of directives are supported:
+  One directive, two forms:
 
-  exec   A block form. An opening comment names a command; the command's
+  cmd    A block form. An opening comment names a command; the command's
          stdout is injected between the opening and closing comments.
          Use it to keep documentation in sync with live command output.
 
-  run    A one-line form. The command runs as a side effect (like
+  cmd!   A one-line form. The command runs as a side effect (like
          go:generate) and the file itself is left untouched.
 
   Commands run through the platform shell — sh -c on Unix and macOS,

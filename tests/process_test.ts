@@ -19,10 +19,10 @@ async function withTempFile(
   }
 }
 
-Deno.test("exec block injects stdout and is idempotent", async () => {
+Deno.test("cmd block injects stdout and is idempotent", async () => {
   await withTempFile(
     "test.md",
-    ["# Test", "", "<!-- exec: echo hello world -->", "stale", "<!-- /exec -->", ""].join(
+    ["# Test", "", "<!-- cmd: echo hello world -->", "stale", "<!-- /cmd -->", ""].join(
       "\n",
     ),
     async (path) => {
@@ -31,7 +31,7 @@ Deno.test("exec block injects stdout and is idempotent", async () => {
       assertEquals(first.changed, true);
       assertEquals(
         await Deno.readTextFile(path),
-        ["# Test", "", "<!-- exec: echo hello world -->", "hello world", "<!-- /exec -->", ""]
+        ["# Test", "", "<!-- cmd: echo hello world -->", "hello world", "<!-- /cmd -->", ""]
           .join("\n"),
       );
 
@@ -42,15 +42,18 @@ Deno.test("exec block injects stdout and is idempotent", async () => {
   );
 });
 
-Deno.test("run directive executes and leaves the file unchanged", async () => {
+Deno.test("cmd! directive executes and leaves the file unchanged", async () => {
   await withTempFile(
     "test.py",
-    "# run: echo side-effect\n# hello\n",
+    "# cmd!: echo side-effect\n# hello\n",
     async (path) => {
       const result = await processFile(path);
       assertEquals(result.error, undefined);
       assertEquals(result.changed, false);
-      assertEquals(await Deno.readTextFile(path), "# run: echo side-effect\n# hello\n");
+      assertEquals(
+        await Deno.readTextFile(path),
+        "# cmd!: echo side-effect\n# hello\n",
+      );
     },
   );
 });
@@ -58,13 +61,13 @@ Deno.test("run directive executes and leaves the file unchanged", async () => {
 Deno.test("check mode reports drift without writing", async () => {
   await withTempFile(
     "test.md",
-    "<!-- exec: echo hello -->\nstale\n<!-- /exec -->\n",
+    "<!-- cmd: echo hello -->\nstale\n<!-- /cmd -->\n",
     async (path) => {
       const result = await processFile(path, { check: true });
       assertEquals(result.changed, true);
       assertEquals(
         await Deno.readTextFile(path),
-        "<!-- exec: echo hello -->\nstale\n<!-- /exec -->\n",
+        "<!-- cmd: echo hello -->\nstale\n<!-- /cmd -->\n",
       );
     },
   );
@@ -73,7 +76,7 @@ Deno.test("check mode reports drift without writing", async () => {
 Deno.test("check mode passes when the file is up to date", async () => {
   await withTempFile(
     "test.md",
-    "<!-- exec: echo hello -->\nhello\n<!-- /exec -->\n",
+    "<!-- cmd: echo hello -->\nhello\n<!-- /cmd -->\n",
     async (path) => {
       const result = await processFile(path, { check: true });
       assertEquals(result.changed, false);
@@ -82,10 +85,10 @@ Deno.test("check mode passes when the file is up to date", async () => {
   );
 });
 
-Deno.test("failed exec command reports an error and does not write", async () => {
+Deno.test("failed cmd block reports an error and does not write", async () => {
   await withTempFile(
     "test.md",
-    `<!-- exec: ${FAILING_COMMAND} -->\nstale\n<!-- /exec -->\n`,
+    `<!-- cmd: ${FAILING_COMMAND} -->\nstale\n<!-- /cmd -->\n`,
     async (path) => {
       const result = await processFile(path);
       assertNotEquals(result.error, undefined);
@@ -93,35 +96,38 @@ Deno.test("failed exec command reports an error and does not write", async () =>
       // The stale content must be preserved.
       assertEquals(
         await Deno.readTextFile(path),
-        `<!-- exec: ${FAILING_COMMAND} -->\nstale\n<!-- /exec -->\n`,
+        `<!-- cmd: ${FAILING_COMMAND} -->\nstale\n<!-- /cmd -->\n`,
       );
     },
   );
 });
 
-Deno.test("failed run directive reports an error", async () => {
+Deno.test("failed cmd! directive reports an error", async () => {
   await withTempFile(
     "test.sh",
-    `# run: ${FAILING_COMMAND}\n# hello\n`,
+    `# cmd!: ${FAILING_COMMAND}\n# hello\n`,
     async (path) => {
       const result = await processFile(path);
       assertNotEquals(result.error, undefined);
       assertNotEquals(result.exitCode, 0);
-      assertEquals(await Deno.readTextFile(path), `# run: ${FAILING_COMMAND}\n# hello\n`);
+      assertEquals(
+        await Deno.readTextFile(path),
+        `# cmd!: ${FAILING_COMMAND}\n# hello\n`,
+      );
     },
   );
 });
 
-Deno.test("malformed exec block is reported without writing", async () => {
+Deno.test("malformed cmd block is reported without writing", async () => {
   await withTempFile(
     "test.md",
-    "<!-- exec: echo hi -->\nno closing tag here\n",
+    "<!-- cmd: echo hi -->\nno closing tag here\n",
     async (path) => {
       const result = await processFile(path);
       assertNotEquals(result.error, undefined);
       assertEquals(
         await Deno.readTextFile(path),
-        "<!-- exec: echo hi -->\nno closing tag here\n",
+        "<!-- cmd: echo hi -->\nno closing tag here\n",
       );
     },
   );
@@ -143,14 +149,14 @@ Deno.test("binary files are skipped", async () => {
 Deno.test("injection preserves existing blank-line layout", async () => {
   await withTempFile(
     "test.md",
-    "<!-- exec: echo hello -->\n\nstale\n\n<!-- /exec -->\n",
+    "<!-- cmd: echo hello -->\n\nstale\n\n<!-- /cmd -->\n",
     async (path) => {
       const result = await processFile(path);
       assertEquals(result.changed, true);
       assertEquals(result.error, undefined);
       assertEquals(
         await Deno.readTextFile(path),
-        "<!-- exec: echo hello -->\n\nhello\n\n<!-- /exec -->\n",
+        "<!-- cmd: echo hello -->\n\nhello\n\n<!-- /cmd -->\n",
       );
     },
   );
@@ -159,30 +165,30 @@ Deno.test("injection preserves existing blank-line layout", async () => {
 Deno.test("formatter-friendly blank lines are stable (idempotent)", async () => {
   await withTempFile(
     "test.md",
-    "<!-- exec: echo hello -->\n\nhello\n\n<!-- /exec -->\n",
+    "<!-- cmd: echo hello -->\n\nhello\n\n<!-- /cmd -->\n",
     async (path) => {
       const result = await processFile(path);
       assertEquals(result.changed, false);
       assertEquals(result.error, undefined);
       assertEquals(
         await Deno.readTextFile(path),
-        "<!-- exec: echo hello -->\n\nhello\n\n<!-- /exec -->\n",
+        "<!-- cmd: echo hello -->\n\nhello\n\n<!-- /cmd -->\n",
       );
     },
   );
 });
 
-Deno.test("a command ending in /exec is not mistaken for the closing tag", async () => {
+Deno.test("a command ending in /cmd is not mistaken for the closing tag", async () => {
   await withTempFile(
     "test.md",
-    "<!-- exec: echo hello /exec -->\nstale\n<!-- /exec -->\n",
+    "<!-- cmd: echo hello /cmd -->\nstale\n<!-- /cmd -->\n",
     async (path) => {
       const result = await processFile(path);
       assertEquals(result.error, undefined);
       assertEquals(result.changed, true);
       assertEquals(
         await Deno.readTextFile(path),
-        "<!-- exec: echo hello /exec -->\nhello /exec\n<!-- /exec -->\n",
+        "<!-- cmd: echo hello /cmd -->\nhello /cmd\n<!-- /cmd -->\n",
       );
     },
   );
@@ -219,7 +225,7 @@ Deno.test("collectFiles reports a clean error for missing paths", async () => {
 Deno.test("prefix override forces comment syntax", async () => {
   await withTempFile(
     "test.txt",
-    "# exec: echo forced\nstale\n# /exec\n",
+    "# cmd: echo forced\nstale\n# /cmd\n",
     async (path) => {
       const result = await processFile(path, {
         prefixOverride: "#",
@@ -229,7 +235,7 @@ Deno.test("prefix override forces comment syntax", async () => {
       assertEquals(result.changed, true);
       assertEquals(
         await Deno.readTextFile(path),
-        "# exec: echo forced\nforced\n# /exec\n",
+        "# cmd: echo forced\nforced\n# /cmd\n",
       );
     },
   );
