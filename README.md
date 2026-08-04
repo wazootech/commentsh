@@ -55,12 +55,7 @@ directives work in every language in your repo:
 | CSS, SCSS                 | `/*` `*/`      | `/* cmd: npx tailwindcss build */`        |
 
 Unknown extensions default to HTML comments, which keeps directives invisible in rendered Markdown.
-Files without extensions (`Dockerfile`, `Makefile`, `.gitignore`, …) are matched by name. Override
-detection at any time with `--prefix` and `--suffix`:
-
-```bash
-commentsh --prefix -- --suffix "" schema.sql
-```
+Files without extensions (`Dockerfile`, `Makefile`, `.gitignore`, …) are matched by name.
 
 Directives must appear at the start of a line and commands run through the platform shell (`sh -c`
 on Unix and macOS, `cmd /c` on Windows), so quoting rules follow that shell.
@@ -93,13 +88,17 @@ Wire it into your task runner so developers never have to think about it:
 }
 ```
 
-### Watching
+### Watching while editing
 
-`--watch` reprocesses files whenever they change on disk, keeping docs live while you edit:
+Use the runtime's watch flag instead — commentsh no longer ships its own watcher:
 
 ```bash
-commentsh --watch README.md
+deno run --allow-read --allow-write --allow-run --watch=README.md commentsh.ts README.md
 ```
+
+`--watch=<file>` restarts the process when the file (or the script) changes, so generated docs stay
+live while you edit. Commands whose output changes on every run (timestamps, hashes) will re-trigger
+a restart each time, so keep injected output deterministic.
 
 ### Checking for stale docs in CI
 
@@ -118,8 +117,7 @@ change. Fail the build whenever a developer changes command behavior but forgets
 ```
 
 Or use the reusable [commentsh check action](.github/actions/check-commentsh/action.yml) — the same
-check with zero setup, inputs for `files`, `prefix`/`suffix`, and a `version` ref, and
-`changed`/`stale-files` outputs:
+check with zero setup, inputs for `files` and a `version` ref, and `changed`/`stale-files` outputs:
 
 ```yaml
 - uses: EthanThatOneKid/commentsh/.github/actions/check-commentsh@main
@@ -142,8 +140,8 @@ USAGE:
 DESCRIPTION:
   commentsh scans text files for comment directives and executes the
   commands they reference. Comment syntax is auto-detected from each
-  file's extension (or filename) and can be overridden with --prefix and
-  --suffix. Directives must appear at the start of a line.
+  file's extension (or filename). Directives must appear at the start
+  of a line.
 
   One directive, two forms:
 
@@ -160,10 +158,6 @@ DESCRIPTION:
 OPTIONS:
       --check            Do not write files. Exit with code 1 if any file
                          would change. Use in CI to catch stale docs.
-      --watch            Reprocess files whenever they change on disk.
-      --prefix <string>  Override the comment prefix (e.g. "--" for SQL).
-      --suffix <string>  Override the comment suffix (e.g. "-->" for HTML).
-                         Pass an empty string for line comments.
   -h, --help             Print this help message and exit.
   -V, --version          Print the version number and exit.
 
@@ -177,8 +171,6 @@ EXAMPLES:
   commentsh README.md
   commentsh src docs
   commentsh --check .          # fail CI if any docs are stale
-  commentsh --watch README.md  # live-update while editing
-  commentsh --prefix -- --suffix "" schema.sql
 
   Run it without cloning, straight from the repo:
 
@@ -197,14 +189,11 @@ See https://github.com/EthanThatOneKid/commentsh for more information.
 commentsh [OPTIONS] <FILE|DIR>...
 ```
 
-| Option              | Description                                                      |
-| ------------------- | ---------------------------------------------------------------- |
-| `--check`           | Do not write files; exit 1 if any file would change (use in CI). |
-| `--watch`           | Reprocess files whenever they change on disk.                    |
-| `--prefix <string>` | Override the auto-detected comment prefix (e.g. `--` for SQL).   |
-| `--suffix <string>` | Override the auto-detected comment suffix (e.g. `-->` for HTML). |
-| `-h`, `--help`      | Print help and exit.                                             |
-| `-V`, `--version`   | Print the version and exit.                                      |
+| Option            | Description                                                      |
+| ----------------- | ---------------------------------------------------------------- |
+| `--check`         | Do not write files; exit 1 if any file would change (use in CI). |
+| `-h`, `--help`    | Print help and exit.                                             |
+| `-V`, `--version` | Print the version and exit.                                      |
 
 Exit codes: `0` success (or everything up to date with `--check`), `1` a command failed / a
 directive is malformed / stale docs, `2` invalid usage.
