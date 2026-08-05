@@ -738,12 +738,30 @@ async function runCli(options: CliOptions): Promise<void> {
   Deno.exit(exitCode);
 }
 
+/** One stale inject block reported by check mode: file, 1-based line, and opening tag. */
+export interface StaleEntry {
+  readonly file: string;
+  readonly line: number;
+  readonly tag: string;
+}
+
+/** Aggregate outcome of processing a file list. */
+export interface FileListResult {
+  readonly changed: number;
+  readonly errors: number;
+  readonly firstExitCode: number;
+  readonly staleEntries: StaleEntry[];
+}
+
 /** Process files in order, printing per-file results (and JSON entries in json mode). */
-export async function processFileList(files: string[], options: CliOptions) {
+export async function processFileList(
+  files: string[],
+  options: CliOptions,
+): Promise<FileListResult> {
   let changed = 0;
   let errors = 0;
   let firstExitCode = 0;
-  const staleEntries: { file: string; line: number; tag: string }[] = [];
+  const staleEntries: StaleEntry[] = [];
   for (const file of files) {
     let result: ProcessResult;
     try {
