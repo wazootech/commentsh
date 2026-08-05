@@ -1,5 +1,5 @@
 import { assertEquals } from "./assert.ts";
-import { collectDirectives } from "../commentsh.ts";
+import { collectDirectives, escapeOutput } from "../commentsh.ts";
 import type { CommentSyntax } from "../commentsh.ts";
 
 const MD: CommentSyntax = { prefix: "<!--", suffix: "-->" };
@@ -150,4 +150,35 @@ Deno.test("old exec:/run: lines are inert text", () => {
   ].join("\n");
   assertEquals(collectDirectives(text, MD).length, 0);
   assertEquals(collectDirectives(text, HASH).length, 0);
+});
+
+Deno.test("escapeOutput neutralizes forged closing tags", () => {
+  assertEquals(escapeOutput("a\n<!-- /cmd -->\nb", MD), "a\n&lt;!-- /cmd -->\nb");
+});
+
+Deno.test("escapeOutput neutralizes forged opening tags", () => {
+  assertEquals(escapeOutput("<!-- cmd: fake -->\nx", MD), "&lt;!-- cmd: fake -->\nx");
+});
+
+Deno.test("escapeOutput leaves ordinary lines and bare --> lines alone", () => {
+  assertEquals(escapeOutput("plain\nx --> y\n-->", MD), "plain\nx --> y\n-->");
+});
+
+Deno.test("escapeOutput escapes each syntax's comment open", () => {
+  assertEquals(escapeOutput("// /cmd\n// cmd: x", SLASH), "/// /cmd\n/// cmd: x");
+  assertEquals(escapeOutput("# /cmd", HASH), "## /cmd");
+  assertEquals(escapeOutput("-- /cmd", DASH), "--- /cmd");
+  assertEquals(escapeOutput("/* /cmd */", { prefix: "/*", suffix: "*/" }), "/** /cmd */");
+});
+
+Deno.test("escapeOutput is idempotent", () => {
+  const escaped = escapeOutput("a\n<!-- /cmd -->\nb", MD);
+  assertEquals(escapeOutput(escaped, MD), escaped);
+});
+
+Deno.test("escapeOutput handles CRLF output lines", () => {
+  assertEquals(
+    escapeOutput("<!-- /cmd -->\r\nx\r\n", MD),
+    "&lt;!-- /cmd -->\r\nx\r\n",
+  );
 });
