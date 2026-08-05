@@ -19,10 +19,16 @@ Deno.test("supports -- to end option parsing", () => {
   assertEquals(options?.files, ["--check"]);
 });
 
+Deno.test("parses the --diff flag", () => {
+  const diff = runOptions(["--diff", "README.md"]);
+  assertEquals(diff?.diff, true);
+  assertEquals(diff?.check, false);
+  assertEquals(diff?.files, ["README.md"]);
+});
+
 Deno.test("returns error for unknown options", () => {
   const action = parseArgs(["--frobnicate", "x.md"]);
   assertEquals(action.kind, "error");
-  assertEquals(parseArgs(["--diff", "x.md"]).kind, "error");
   assertEquals(parseArgs(["--watch", "x.md"]).kind, "error");
   assertEquals(parseArgs(["--prefix", "#", "x.md"]).kind, "error");
   assertEquals(parseArgs(["--suffix", "#", "x.md"]).kind, "error");
