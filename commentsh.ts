@@ -274,6 +274,36 @@ export function collectDirectives(text: string, syntax: CommentSyntax): Directiv
   return out;
 }
 
+/** Neutralized comment open per syntax, kept readable. */
+const ESCAPED_PREFIX: Record<string, string> = {
+  "<!--": "&lt;!--",
+  "#": "##",
+  "//": "///",
+  "--": "---",
+  "/*": "/**",
+};
+
+/**
+ * Escape directive-lookalike lines in command output so stdout can never forge
+ * an opening or closing tag. A line the tokenizer would parse as a directive
+ * gets its comment open neutralized; escaped lines no longer tokenize, so
+ * re-running is stable.
+ */
+export function escapeOutput(output: string, syntax: CommentSyntax): string {
+  if (!output.includes(syntax.prefix)) return output;
+  const esc = ESCAPED_PREFIX[syntax.prefix] ?? syntax.prefix + syntax.prefix.slice(-1);
+  const lines = output.split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const bare = line.endsWith("\r") ? line.slice(0, -1) : line;
+    if (scanLine(bare, 0, 1, syntax) !== undefined) {
+      const at = line.indexOf(syntax.prefix);
+      lines[i] = line.slice(0, at) + esc + line.slice(at + syntax.prefix.length);
+    }
+  }
+  return lines.join("\n");
+}
+
 // ---------------------------------------------------------------------------
 // Command execution
 // ---------------------------------------------------------------------------
@@ -408,12 +438,13 @@ export async function processFile(
     }
     const content = updated.slice(d.contentStart, d.endTagStart);
     const layout = /^(\s*)([\s\S]*?)(\s*)$/.exec(content) ?? ["", "", "", ""];
-    const injected = (layout[1] ?? "") + outputs[i] + (layout[3] ?? "");
+    const escaped = escapeOutput(outputs[i], syntax);
+    const injected = (layout[1] ?? "") + escaped + (layout[3] ?? "");
     if (injected !== content) {
       const tagStart = text.lastIndexOf("\n", d.contentStart - 1) + 1;
       const tag = text.slice(tagStart, d.contentStart).trim();
       diffBlocks.push(
-        renderBlockDiff(d, tag, (layout[2] ?? "").split("\n"), outputs[i].split("\n")),
+        renderBlockDiff(d, tag, (layout[2] ?? "").split("\n"), escaped.split("\n")),
       );
       staleBlocks.push(blockHeader(d, tag));
     }

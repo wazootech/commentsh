@@ -1,8 +1,23 @@
 import { assertEquals, assertNotEquals } from "./assert.ts";
-import { collectFiles, processFile } from "../commentsh.ts";
+import { collectDirectives, collectFiles, processFile, syntaxForPath } from "../commentsh.ts";
 
 /** A command that exits with a non-zero code on every platform. */
 const FAILING_COMMAND = Deno.build.os === "windows" ? "exit /b 1" : "false";
+
+/** Prints `a\n// /cmd\nb`: cmd needs unquoted parens; sh needs them quoted. */
+const FORGED_SLASH = Deno.build.os === "windows"
+  ? "deno eval console.log(String.fromCharCode(97,10,47,47,32,47,99,109,100,10,98))"
+  : 'deno eval "console.log(String.fromCharCode(97,10,47,47,32,47,99,109,100,10,98))"';
+
+/** Prints `a\n<!-- /cmd -->\nb`. */
+const FORGED_HTML = Deno.build.os === "windows"
+  ? "deno eval console.log(String.fromCharCode(97,10,60,33,45,45,32,47,99,109,100,32,45,45,62,10,98))"
+  : 'deno eval "console.log(String.fromCharCode(97,10,60,33,45,45,32,47,99,109,100,32,45,45,62,10,98))"';
+
+/** Prints `x --> y`. */
+const BARE_ARROW = Deno.build.os === "windows"
+  ? "deno eval console.log(String.fromCharCode(120,32,45,45,62,32,121))"
+  : 'deno eval "console.log(String.fromCharCode(120,32,45,45,62,32,121))"';
 
 async function withTempFile(
   name: string,
@@ -268,6 +283,61 @@ Deno.test("cmd! side-effect blocks never appear as stale", async () => {
       const result = await processFile(path);
       assertEquals(result.changed, false);
       assertEquals(result.staleBlocks, []);
+    },
+  );
+});
+
+Deno.test("stdout that forges a closing tag cannot corrupt the block", async () => {
+  await withTempFile(
+    "test.ts",
+    `// cmd: ${FORGED_SLASH}\n\nOLD\n\n// /cmd\n`,
+    async (path) => {
+      const result = await processFile(path);
+      assertEquals(result.error, undefined);
+      assertEquals(result.changed, true);
+      const text = await Deno.readTextFile(path);
+      assertEquals(text.includes("/// /cmd"), true);
+      const directives = collectDirectives(text, syntaxForPath(path));
+      assertEquals(directives.length, 1);
+      assertEquals(directives[0].malformed, false);
+      const again = await processFile(path);
+      assertEquals(again.changed, false);
+    },
+  );
+});
+
+Deno.test("HTML stdout cannot forge a closing tag", async () => {
+  await withTempFile(
+    "test.md",
+    `<!-- cmd: ${FORGED_HTML} -->\n\nOLD\n\n<!-- /cmd -->\n`,
+    async (path) => {
+      const result = await processFile(path);
+      assertEquals(result.error, undefined);
+      assertEquals(result.changed, true);
+      const text = await Deno.readTextFile(path);
+      assertEquals(text.includes("&lt;!-- /cmd -->"), true);
+      const directives = collectDirectives(text, syntaxForPath(path));
+      assertEquals(directives.length, 1);
+      assertEquals(directives[0].malformed, false);
+      const again = await processFile(path);
+      assertEquals(again.changed, false);
+    },
+  );
+});
+
+Deno.test("output containing --> alone is injected unchanged", async () => {
+  await withTempFile(
+    "test.md",
+    `<!-- cmd: ${BARE_ARROW} -->\n\nOLD\n\n<!-- /cmd -->\n`,
+    async (path) => {
+      const result = await processFile(path);
+      assertEquals(result.error, undefined);
+      assertEquals(result.changed, true);
+      const text = await Deno.readTextFile(path);
+      assertEquals(text.includes("x --> y"), true);
+      assertEquals(text.includes("&lt;!--"), false);
+      const again = await processFile(path);
+      assertEquals(again.changed, false);
     },
   );
 });

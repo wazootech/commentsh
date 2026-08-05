@@ -1,6 +1,11 @@
 import { assertEquals, assertNotEquals } from "./assert.ts";
 import { processFile } from "../commentsh.ts";
 
+/** Prints `a\n<!-- /cmd -->\nb`: cmd needs unquoted parens; sh needs them quoted. */
+const FORGED_HTML = Deno.build.os === "windows"
+  ? "deno eval console.log(String.fromCharCode(97,10,60,33,45,45,32,47,99,109,100,32,45,45,62,10,98))"
+  : 'deno eval "console.log(String.fromCharCode(97,10,60,33,45,45,32,47,99,109,100,32,45,45,62,10,98))"';
+
 async function withTempFile(
   name: string,
   content: string,
@@ -100,6 +105,20 @@ Deno.test("--diff ignores cmd! side effects", async () => {
       const result = await processFile(path, { diff: true });
       assertEquals(result.diff?.includes("cmd!"), false);
       assertEquals(result.diff?.includes("line 1"), true);
+    },
+  );
+});
+
+Deno.test("--diff shows escaped lines for directive-shaped output", async () => {
+  await withTempFile(
+    "test.md",
+    `<!-- cmd: ${FORGED_HTML} -->\nSTALE\n<!-- /cmd -->\n`,
+    async (path) => {
+      const result = await processFile(path, { diff: true });
+      assertEquals(result.error, undefined);
+      assertEquals(result.changed, true);
+      assertEquals(result.diff?.includes("  + &lt;!-- /cmd -->"), true);
+      assertEquals(result.diff?.includes("  + <!-- /cmd -->"), false);
     },
   );
 });
