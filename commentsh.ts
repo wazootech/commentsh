@@ -324,6 +324,7 @@ export interface ProcessResult {
   readonly error: string | undefined;
   readonly exitCode: number;
   readonly diff: string | undefined;
+  readonly staleBlocks: string[];
 }
 
 /** Execute a file's directives; write back when an inject block changed. */
@@ -342,6 +343,7 @@ export async function processFile(
       error: undefined,
       exitCode: 0,
       diff: undefined,
+      staleBlocks: [],
     };
   }
 
@@ -390,12 +392,14 @@ export async function processFile(
       error,
       exitCode,
       diff: undefined,
+      staleBlocks: [],
     };
   }
 
   // Apply inject blocks right-to-left so indices stay valid. The blank lines
   // around the old content are kept so formatters never fight commentsh.
   const diffBlocks: string[] = [];
+  const staleBlocks: string[] = [];
   let updated = text;
   for (let i = directives.length - 1; i >= 0; i--) {
     const d = directives[i];
@@ -411,6 +415,7 @@ export async function processFile(
       diffBlocks.push(
         renderBlockDiff(d, tag, (layout[2] ?? "").split("\n"), outputs[i].split("\n")),
       );
+      staleBlocks.push(blockHeader(d, tag));
     }
     updated = updated.slice(0, d.contentStart) + injected + updated.slice(d.endTagStart);
   }
@@ -428,12 +433,18 @@ export async function processFile(
     error: undefined,
     exitCode: 0,
     diff: diffText,
+    staleBlocks: staleBlocks.reverse(),
   };
 }
 
 // ---------------------------------------------------------------------------
 // Block diff rendering
 // ---------------------------------------------------------------------------
+
+/** Header for one inject block: its line number and opening tag. */
+function blockHeader(directive: Directive, tag: string): string {
+  return `line ${directive.line} (${tag})`;
+}
 
 /** Render one inject block's change: removed lines (-) then added lines (+). */
 function renderBlockDiff(
@@ -442,7 +453,7 @@ function renderBlockDiff(
   oldLines: string[],
   newLines: string[],
 ): string {
-  const lines = [`line ${directive.line} (${tag})`];
+  const lines = [blockHeader(directive, tag)];
   for (const line of oldLines) lines.push(`  - ${line.replace(/\r/g, "")}`);
   for (const line of newLines) lines.push(`  + ${line.replace(/\r/g, "")}`);
   return lines.join("\n");
@@ -698,6 +709,7 @@ async function processFileList(files: string[], options: CliOptions) {
         console.log("");
       } else if (options.check) {
         console.log(`out of date: ${file}`);
+        for (const header of result.staleBlocks) console.log(`  ${header}`);
       } else {
         console.log(`updated: ${file}`);
       }

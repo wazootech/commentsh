@@ -221,3 +221,53 @@ Deno.test("collectFiles reports a clean error for missing paths", async () => {
   }
   assertEquals(threw, true);
 });
+
+Deno.test("check mode reports stale blocks with line and tag", async () => {
+  await withTempFile(
+    "test.md",
+    "<!-- cmd: echo hello -->\n\nstale\n\n<!-- /cmd -->\n",
+    async (path) => {
+      const result = await processFile(path, { check: true });
+      assertEquals(result.changed, true);
+      assertEquals(result.staleBlocks, ["line 1 (<!-- cmd: echo hello -->)"]);
+    },
+  );
+});
+
+Deno.test("stale blocks are reported in file order", async () => {
+  await withTempFile(
+    "test.md",
+    "<!-- cmd: echo one -->\n\none-old\n\n<!-- /cmd -->\n\ntext\n\n<!-- cmd: echo two -->\n\ntwo-old\n\n<!-- /cmd -->\n",
+    async (path) => {
+      const result = await processFile(path, { check: true });
+      assertEquals(result.staleBlocks, [
+        "line 1 (<!-- cmd: echo one -->)",
+        "line 9 (<!-- cmd: echo two -->)",
+      ]);
+    },
+  );
+});
+
+Deno.test("up-to-date files report no stale blocks", async () => {
+  await withTempFile(
+    "test.md",
+    "<!-- cmd: echo hello -->\n\nhello\n\n<!-- /cmd -->\n",
+    async (path) => {
+      const result = await processFile(path, { check: true });
+      assertEquals(result.changed, false);
+      assertEquals(result.staleBlocks, []);
+    },
+  );
+});
+
+Deno.test("cmd! side-effect blocks never appear as stale", async () => {
+  await withTempFile(
+    "test.md",
+    "<!-- cmd!: echo side -->\n",
+    async (path) => {
+      const result = await processFile(path);
+      assertEquals(result.changed, false);
+      assertEquals(result.staleBlocks, []);
+    },
+  );
+});
