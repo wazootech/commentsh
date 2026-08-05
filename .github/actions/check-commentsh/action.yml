@@ -6,12 +6,6 @@ inputs:
   files:
     description: Newline-delimited file or directory paths to check.
     required: true
-  prefix:
-    description: Comment-prefix override (e.g. "--" for SQL).
-    required: false
-  suffix:
-    description: Comment-suffix override (e.g. "-->" for HTML).
-    required: false
   version:
     description: >-
       commentsh ref (tag, branch, or commit) to run from GitHub raw. Leave
@@ -38,8 +32,6 @@ runs:
       shell: bash
       env:
         INPUT_FILES: ${{ inputs.files }}
-        INPUT_PREFIX: ${{ inputs.prefix }}
-        INPUT_SUFFIX: ${{ inputs.suffix }}
         INPUT_VERSION: ${{ inputs.version }}
         ACTION_REF: ${{ github.action_ref }}
       run: |
@@ -55,8 +47,6 @@ runs:
         fi
 
         ARGS=(--check)
-        if [ -n "${INPUT_PREFIX}" ]; then ARGS+=(--prefix "${INPUT_PREFIX}"); fi
-        if [ -n "${INPUT_SUFFIX}" ]; then ARGS+=(--suffix "${INPUT_SUFFIX}"); fi
 
         FILES=()
         while IFS= read -r line; do

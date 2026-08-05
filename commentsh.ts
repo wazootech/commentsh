@@ -313,8 +313,6 @@ export async function runCommand(command: string, stream = false): Promise<Comma
 
 export interface ProcessOptions {
   readonly check?: boolean;
-  readonly prefixOverride?: string;
-  readonly suffixOverride?: string;
 }
 
 export interface ProcessResult {
@@ -331,7 +329,7 @@ export async function processFile(
   path: string,
   options: ProcessOptions = {},
 ): Promise<ProcessResult> {
-  const { check = false, prefixOverride, suffixOverride } = options;
+  const { check = false } = options;
   const text = await Deno.readTextFile(path);
   if (text.includes("\u0000")) {
     return {
@@ -344,11 +342,7 @@ export async function processFile(
     };
   }
 
-  const auto = syntaxForPath(path);
-  const syntax: CommentSyntax = {
-    prefix: prefixOverride ?? auto.prefix,
-    suffix: suffixOverride ?? auto.suffix,
-  };
+  const syntax = syntaxForPath(path);
   const directives = collectDirectives(text, syntax);
 
   const outputs: string[] = [];
@@ -481,9 +475,6 @@ export async function collectFiles(paths: string[]): Promise<string[]> {
 
 export interface CliOptions {
   check: boolean;
-  watch: boolean;
-  prefix: string | undefined;
-  suffix: string | undefined;
   files: string[];
 }
 
@@ -496,9 +487,6 @@ export type CliAction =
 export function parseArgs(args: string[]): CliAction {
   const options: CliOptions = {
     check: false,
-    watch: false,
-    prefix: undefined,
-    suffix: undefined,
     files: [],
   };
   let positionalOnly = false;
@@ -521,25 +509,11 @@ export function parseArgs(args: string[]): CliAction {
       case "--check":
         options.check = true;
         break;
-      case "--watch":
-        options.watch = true;
-        break;
-      case "--prefix":
-      case "--suffix": {
-        const value = args[++i];
-        if (value === undefined) return { kind: "error", message: `missing value for ${arg}` };
-        if (arg === "--prefix") options.prefix = value;
-        else options.suffix = value;
-        break;
-      }
       default:
         if (arg.startsWith("-") && arg !== "-") {
           return { kind: "error", message: `unknown option: ${arg}` };
         } else options.files.push(arg);
     }
-  }
-  if (options.watch && options.check) {
-    return { kind: "error", message: "cannot combine --watch with --check" };
   }
   if (options.files.length === 0) {
     return { kind: "error", message: "no files or directories given" };
@@ -557,8 +531,8 @@ USAGE:
 DESCRIPTION:
   commentsh scans text files for comment directives and executes the
   commands they reference. Comment syntax is auto-detected from each
-  file's extension (or filename) and can be overridden with --prefix and
-  --suffix. Directives must appear at the start of a line.
+  file's extension (or filename). Directives must appear at the start
+  of a line.
 
   One directive, two forms:
 
@@ -575,10 +549,6 @@ DESCRIPTION:
 OPTIONS:
       --check            Do not write files. Exit with code 1 if any file
                          would change. Use in CI to catch stale docs.
-      --watch            Reprocess files whenever they change on disk.
-      --prefix <string>  Override the comment prefix (e.g. "--" for SQL).
-      --suffix <string>  Override the comment suffix (e.g. "-->" for HTML).
-                         Pass an empty string for line comments.
   -h, --help             Print this help message and exit.
   -V, --version          Print the version number and exit.
 
@@ -592,8 +562,6 @@ EXAMPLES:
   commentsh README.md
   commentsh src docs
   commentsh --check .          # fail CI if any docs are stale
-  commentsh --watch README.md  # live-update while editing
-  commentsh --prefix -- --suffix "" schema.sql
 
   Run it without cloning, straight from the repo:
 
@@ -627,10 +595,6 @@ export async function main(): Promise<void> {
 }
 
 async function runCli(options: CliOptions): Promise<void> {
-  if (options.watch) {
-    await runWatch(options);
-    return;
-  }
   let files: string[];
   try {
     files = await collectFiles(options.files);
@@ -663,11 +627,7 @@ async function processFileList(files: string[], options: CliOptions) {
   for (const file of files) {
     let result: ProcessResult;
     try {
-      result = await processFile(file, {
-        check: options.check,
-        prefixOverride: options.prefix,
-        suffixOverride: options.suffix,
-      });
+      result = await processFile(file, { check: options.check });
     } catch (err) {
       console.error(`commentsh: ${file}: ${err instanceof Error ? err.message : String(err)}`);
       errors++;
@@ -691,69 +651,6 @@ async function processFileList(files: string[], options: CliOptions) {
     }
   }
   return { changed, errors, firstExitCode };
-}
-
-// ---------------------------------------------------------------------------
-// Watch mode
-// ---------------------------------------------------------------------------
-
-export function debounce(fn: () => void, ms: number): () => void {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  return () => {
-    if (timer !== undefined) clearTimeout(timer);
-    timer = setTimeout(() => {
-      timer = undefined;
-      fn();
-    }, ms);
-  };
-}
-
-/** Drop paths inside skipped directories (node_modules, .git, …). */
-export function filterWatchPaths(paths: string[]): string[] {
-  return paths.filter((path) =>
-    !path.split(/[\\/]/).some((segment) => segment !== "" && SKIPPED.has(segment))
-  );
-}
-
-/** Reprocess files on change; runs an initial pass, then reacts to fs events. */
-export async function runWatch(options: CliOptions): Promise<void> {
-  const initial = await collectFiles(options.files).catch((err: unknown) => {
-    console.error(`commentsh: ${err instanceof Error ? err.message : String(err)}`);
-    Deno.exit(1);
-  });
-  await processFileList(initial, options);
-  console.log(`commentsh: watching ${options.files.join(", ")} — press Ctrl-C to stop`);
-
-  const watcher = Deno.watchFs(options.files, { recursive: true });
-  const pending = new Set<string>();
-  let processing = false;
-  const flush = debounce(async () => {
-    if (processing) return;
-    processing = true;
-    const files: string[] = [];
-    for (const candidate of filterWatchPaths([...pending])) {
-      try {
-        const info = await Deno.stat(candidate);
-        if (info.isFile) files.push(candidate);
-      } catch {
-        // Path vanished; nothing to process.
-      }
-    }
-    pending.clear();
-    if (files.length > 0) {
-      try {
-        await processFileList(files, options);
-      } catch (err) {
-        console.error(`commentsh: ${err instanceof Error ? err.message : String(err)}`);
-      }
-    }
-    processing = false;
-    if (pending.size > 0) flush();
-  }, 150);
-  for await (const event of watcher) {
-    for (const path of event.paths) pending.add(path);
-    flush();
-  }
 }
 
 if (import.meta.main) {

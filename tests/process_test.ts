@@ -221,22 +221,3 @@ Deno.test("collectFiles reports a clean error for missing paths", async () => {
   }
   assertEquals(threw, true);
 });
-
-Deno.test("prefix override forces comment syntax", async () => {
-  await withTempFile(
-    "test.txt",
-    "# cmd: echo forced\nstale\n# /cmd\n",
-    async (path) => {
-      const result = await processFile(path, {
-        prefixOverride: "#",
-        suffixOverride: "",
-      });
-      assertEquals(result.error, undefined);
-      assertEquals(result.changed, true);
-      assertEquals(
-        await Deno.readTextFile(path),
-        "# cmd: echo forced\nforced\n# /cmd\n",
-      );
-    },
-  );
-});
