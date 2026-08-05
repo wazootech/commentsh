@@ -100,14 +100,20 @@ deno run --allow-read --allow-write --allow-run --watch=README.md commentsh.ts R
 live while you edit. Commands whose output changes on every run (timestamps, hashes) will re-trigger
 a restart each time, so keep injected output deterministic.
 
-### Checking for stale docs in CI
+### Previewing changes
 
-To preview what commentsh would change, run it and inspect the result with `git diff` before
-committing:
+`--diff` runs every directive without writing, printing what each changed `cmd:` block would look
+like, and exits 1 if anything would change:
 
 ```bash
-commentsh README.md && git diff --stat
+commentsh --diff README.md
 ```
+
+The diff is block-scoped: each changed block shows its removed and added lines under the opening
+comment's line number, so prose edits elsewhere in the file stay out of the way. For a whole-file
+view, run commentsh normally and inspect the result with `git diff`.
+
+### Checking for stale docs in CI
 
 `--check` runs every directive but refuses to write files, exiting with code 1 if anything would
 change. Fail the build whenever a developer changes command behavior but forgets to regenerate:
@@ -158,19 +164,22 @@ DESCRIPTION:
 OPTIONS:
       --check            Do not write files. Exit with code 1 if any file
                          would change. Use in CI to catch stale docs.
+      --diff             Do not write files. Print the block changes as a
+                         diff and exit 1 if any file would change.
   -h, --help             Print this help message and exit.
   -V, --version          Print the version number and exit.
 
 EXIT CODES:
-  0  Success. With --check, every file is up to date.
-  1  A command failed, a directive is malformed, or (with --check) a file
-     is out of date.
+  0  Success. With --check or --diff, every file is up to date.
+  1  A command failed, a directive is malformed, or (with --check or
+     --diff) a file is out of date.
   2  Invalid command-line usage.
 
 EXAMPLES:
   commentsh README.md
   commentsh src docs
   commentsh --check .          # fail CI if any docs are stale
+  commentsh --diff README.md   # preview changes without writing
 
   Run it without cloning, straight from the repo:
 
@@ -189,13 +198,14 @@ See https://github.com/EthanThatOneKid/commentsh for more information.
 commentsh [OPTIONS] <FILE|DIR>...
 ```
 
-| Option            | Description                                                      |
-| ----------------- | ---------------------------------------------------------------- |
-| `--check`         | Do not write files; exit 1 if any file would change (use in CI). |
-| `-h`, `--help`    | Print help and exit.                                             |
-| `-V`, `--version` | Print the version and exit.                                      |
+| Option            | Description                                                                      |
+| ----------------- | -------------------------------------------------------------------------------- |
+| `--check`         | Do not write files; exit 1 if any file would change (use in CI).                 |
+| `--diff`          | Do not write files; print the block changes and exit 1 if any file would change. |
+| `-h`, `--help`    | Print help and exit.                                                             |
+| `-V`, `--version` | Print the version and exit.                                                      |
 
-Exit codes: `0` success (or everything up to date with `--check`), `1` a command failed / a
+Exit codes: `0` success (or everything up to date with `--check`/`--diff`), `1` a command failed / a
 directive is malformed / stale docs, `2` invalid usage.
 
 ## Design notes

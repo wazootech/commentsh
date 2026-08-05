@@ -313,6 +313,7 @@ export async function runCommand(command: string, stream = false): Promise<Comma
 
 export interface ProcessOptions {
   readonly check?: boolean;
+  readonly diff?: boolean;
 }
 
 export interface ProcessResult {
@@ -322,6 +323,7 @@ export interface ProcessResult {
   readonly skipped: boolean;
   readonly error: string | undefined;
   readonly exitCode: number;
+  readonly diff: string | undefined;
 }
 
 /** Execute a file's directives; write back when an inject block changed. */
@@ -329,7 +331,7 @@ export async function processFile(
   path: string,
   options: ProcessOptions = {},
 ): Promise<ProcessResult> {
-  const { check = false } = options;
+  const { check = false, diff = false } = options;
   const text = await Deno.readTextFile(path);
   if (text.includes("\u0000")) {
     return {
@@ -339,6 +341,7 @@ export async function processFile(
       skipped: true,
       error: undefined,
       exitCode: 0,
+      diff: undefined,
     };
   }
 
@@ -386,11 +389,13 @@ export async function processFile(
       skipped: false,
       error,
       exitCode,
+      diff: undefined,
     };
   }
 
   // Apply inject blocks right-to-left so indices stay valid. The blank lines
   // around the old content are kept so formatters never fight commentsh.
+  const diffBlocks: string[] = [];
   let updated = text;
   for (let i = directives.length - 1; i >= 0; i--) {
     const d = directives[i];
@@ -400,11 +405,21 @@ export async function processFile(
     const content = updated.slice(d.contentStart, d.endTagStart);
     const layout = /^(\s*)([\s\S]*?)(\s*)$/.exec(content) ?? ["", "", "", ""];
     const injected = (layout[1] ?? "") + outputs[i] + (layout[3] ?? "");
+    if (injected !== content) {
+      const tagStart = text.lastIndexOf("\n", d.contentStart - 1) + 1;
+      const tag = text.slice(tagStart, d.contentStart).trim();
+      diffBlocks.push(
+        renderBlockDiff(d, tag, (layout[2] ?? "").split("\n"), outputs[i].split("\n")),
+      );
+    }
     updated = updated.slice(0, d.contentStart) + injected + updated.slice(d.endTagStart);
   }
 
   const changed = updated !== text;
-  if (changed && !check) await Deno.writeTextFile(path, updated);
+  const diffText = diff && diffBlocks.length > 0
+    ? `${path}: ${diffBlocks.length} block(s) would change\n\n${diffBlocks.reverse().join("\n\n")}`
+    : undefined;
+  if (changed && !check && !diff) await Deno.writeTextFile(path, updated);
   return {
     path,
     changed,
@@ -412,7 +427,25 @@ export async function processFile(
     skipped: false,
     error: undefined,
     exitCode: 0,
+    diff: diffText,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Block diff rendering
+// ---------------------------------------------------------------------------
+
+/** Render one inject block's change: removed lines (-) then added lines (+). */
+function renderBlockDiff(
+  directive: Directive,
+  tag: string,
+  oldLines: string[],
+  newLines: string[],
+): string {
+  const lines = [`line ${directive.line} (${tag})`];
+  for (const line of oldLines) lines.push(`  - ${line.replace(/\r/g, "")}`);
+  for (const line of newLines) lines.push(`  + ${line.replace(/\r/g, "")}`);
+  return lines.join("\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -475,6 +508,7 @@ export async function collectFiles(paths: string[]): Promise<string[]> {
 
 export interface CliOptions {
   check: boolean;
+  diff: boolean;
   files: string[];
 }
 
@@ -487,6 +521,7 @@ export type CliAction =
 export function parseArgs(args: string[]): CliAction {
   const options: CliOptions = {
     check: false,
+    diff: false,
     files: [],
   };
   let positionalOnly = false;
@@ -508,6 +543,9 @@ export function parseArgs(args: string[]): CliAction {
         return { kind: "version" };
       case "--check":
         options.check = true;
+        break;
+      case "--diff":
+        options.diff = true;
         break;
       default:
         if (arg.startsWith("-") && arg !== "-") {
@@ -549,19 +587,22 @@ DESCRIPTION:
 OPTIONS:
       --check            Do not write files. Exit with code 1 if any file
                          would change. Use in CI to catch stale docs.
+      --diff             Do not write files. Print the block changes as a
+                         diff and exit 1 if any file would change.
   -h, --help             Print this help message and exit.
   -V, --version          Print the version number and exit.
 
 EXIT CODES:
-  0  Success. With --check, every file is up to date.
-  1  A command failed, a directive is malformed, or (with --check) a file
-     is out of date.
+  0  Success. With --check or --diff, every file is up to date.
+  1  A command failed, a directive is malformed, or (with --check or
+     --diff) a file is out of date.
   2  Invalid command-line usage.
 
 EXAMPLES:
   commentsh README.md
   commentsh src docs
   commentsh --check .          # fail CI if any docs are stale
+  commentsh --diff README.md   # preview changes without writing
 
   Run it without cloning, straight from the repo:
 
@@ -605,6 +646,15 @@ async function runCli(options: CliOptions): Promise<void> {
 
   const { changed, errors, firstExitCode } = await processFileList(files, options);
 
+  if (options.diff) {
+    if (errors > 0) console.error(`commentsh: ${errors} error(s)`);
+    else if (changed > 0) console.error(`commentsh: ${changed} file(s) would change`);
+    else console.log(`commentsh: all ${files.length} file(s) up to date`);
+    let exitCode = firstExitCode;
+    if (changed > 0 && exitCode === 0) exitCode = 1;
+    Deno.exit(exitCode);
+  }
+
   if (options.check) {
     if (errors === 0 && changed === 0) {
       console.log(`commentsh: all ${files.length} file(s) up to date`);
@@ -627,7 +677,7 @@ async function processFileList(files: string[], options: CliOptions) {
   for (const file of files) {
     let result: ProcessResult;
     try {
-      result = await processFile(file, { check: options.check });
+      result = await processFile(file, { check: options.check, diff: options.diff });
     } catch (err) {
       console.error(`commentsh: ${file}: ${err instanceof Error ? err.message : String(err)}`);
       errors++;
@@ -643,7 +693,10 @@ async function processFileList(files: string[], options: CliOptions) {
     }
     if (result.changed) {
       changed++;
-      if (options.check) {
+      if (result.diff !== undefined) {
+        console.log(result.diff);
+        console.log("");
+      } else if (options.check) {
         console.log(`out of date: ${file}`);
       } else {
         console.log(`updated: ${file}`);
