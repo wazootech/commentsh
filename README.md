@@ -207,6 +207,7 @@ EXAMPLES:
   commentsh src docs
   commentsh --check .          # fail CI if any docs are stale
   commentsh --diff README.md   # preview changes without writing
+  commentsh --check --json .   # machine-readable stale-block report
 
   Run it without cloning, straight from the repo:
 
