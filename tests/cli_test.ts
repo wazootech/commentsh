@@ -34,6 +34,11 @@ Deno.test("returns error for unknown options", () => {
   assertEquals(parseArgs(["--suffix", "#", "x.md"]).kind, "error");
 });
 
+Deno.test("keeps numeric-looking filenames as strings", () => {
+  const options = runOptions(["123", "1.5e3", "0x10", ".5"]);
+  assertEquals(options?.files, ["123", "1.5e3", "0x10", ".5"]);
+});
+
 Deno.test("returns error when no files are given", () => {
   assertEquals(parseArgs([]).kind, "error");
   assertEquals(parseArgs(["--check"]).kind, "error");
@@ -44,6 +49,15 @@ Deno.test("returns help and version actions", () => {
   assertEquals(parseArgs(["-h"]).kind, "help");
   assertEquals(parseArgs(["--version"]).kind, "version");
   assertEquals(parseArgs(["-V"]).kind, "version");
+});
+
+Deno.test("supports --flag=value boolean form", () => {
+  const on = runOptions(["--check=true", "README.md"]);
+  assertEquals(on?.check, true);
+  assertEquals(on?.files, ["README.md"]);
+  const off = runOptions(["--check=false", "README.md"]);
+  assertEquals(off?.check, false);
+  assertEquals(off?.files, ["README.md"]);
 });
 
 Deno.test("parses the --json flag with --check", () => {
