@@ -1,11 +1,12 @@
 /**
  * commentsh — Comment Shell. Runs shell commands from code comments.
  * `cmd:` blocks inject command stdout between the tag and its `/cmd` closer;
- * `cmd!:` lines run one-liners as side effects. One std dependency
- * (@std/cli) for argument parsing; run from any URL or checkout.
+ * `cmd!:` lines run one-liners as side effects. Uses @std/fs for file walking
+ * and @std/cli for argument parsing; run from any URL or checkout.
  * @module
  */
 import { parseArgs as parseArgsStd } from "@std/cli/parse-args";
+import { walk } from "@std/fs/walk";
 
 export const VERSION = "0.2.0";
 
@@ -522,16 +523,14 @@ const SKIPPED = new Set([
   "out",
 ]);
 
-async function* walkDirectory(dir: string): AsyncGenerator<string> {
-  for await (const entry of Deno.readDir(dir)) {
-    const path = `${dir}/${entry.name}`;
-    if (entry.isDirectory) {
-      if (!SKIPPED.has(entry.name)) yield* walkDirectory(path);
-    } else if (entry.isFile) {
-      yield path;
-    }
-  }
-}
+/** Skip regex for @std/fs/walk: matches a SKIPPED name at the start or
+ * end of a path segment, so nested vendor folders AND top-level ones
+ * under a relative root like `.` are pruned (walk's join() strips a
+ * `./` prefix, leaving the bare name). Trade-off: an explicitly passed
+ * root that is itself a skipped name is now pruned too. */
+const SKIP_PATTERN = new RegExp(
+  `(?:^|[\\\\/])(?:${[...SKIPPED].map((name) => name.replaceAll(".", "\.")).join("|")})$`,
+);
 
 /** Expand files and directories into a flat file list. */
 export async function collectFiles(paths: string[]): Promise<string[]> {
@@ -545,7 +544,22 @@ export async function collectFiles(paths: string[]): Promise<string[]> {
     }
     if (info.isFile) files.push(path);
     else if (info.isDirectory) {
-      for await (const entry of walkDirectory(path)) files.push(entry);
+      for await (
+        const entry of walk(path, {
+          includeDirs: false,
+          includeSymlinks: false,
+          skip: [SKIP_PATTERN],
+        })
+      ) {
+        let root = path;
+        while (root.endsWith("\\") || root.endsWith("/")) root = root.slice(0, -1);
+        if (root.startsWith("./")) root = root.slice(2);
+        let relative = entry.path.startsWith(root) ? entry.path.slice(root.length) : entry.path;
+        while (relative.startsWith("\\") || relative.startsWith("/")) {
+          relative = relative.slice(1);
+        }
+        files.push(`${path}/${relative.replaceAll("\\", "/")}`);
+      }
     }
   }
   return files;
