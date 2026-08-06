@@ -346,6 +346,12 @@ export interface ProcessOptions {
   readonly diff?: boolean;
 }
 
+/** One stale inject block: its 1-based line number and opening tag. */
+export interface StaleBlock {
+  readonly line: number;
+  readonly tag: string;
+}
+
 export interface ProcessResult {
   readonly path: string;
   readonly changed: boolean;
@@ -354,6 +360,7 @@ export interface ProcessResult {
   readonly error: string | undefined;
   readonly exitCode: number;
   readonly diff: string | undefined;
+  readonly staleBlocks?: StaleBlock[];
 }
 
 /** Execute a file's directives; write back when an inject block changed. */
@@ -372,6 +379,7 @@ export async function processFile(
       error: undefined,
       exitCode: 0,
       diff: undefined,
+      staleBlocks: [],
     };
   }
 
@@ -420,12 +428,14 @@ export async function processFile(
       error,
       exitCode,
       diff: undefined,
+      staleBlocks: [],
     };
   }
 
   // Apply inject blocks right-to-left so indices stay valid. The blank lines
   // around the old content are kept so formatters never fight commentsh.
   const diffBlocks: string[] = [];
+  const staleBlocks: StaleBlock[] = [];
   let updated = text;
   for (let i = directives.length - 1; i >= 0; i--) {
     const d = directives[i];
@@ -442,6 +452,7 @@ export async function processFile(
       diffBlocks.push(
         renderBlockDiff(d, tag, (layout[2] ?? "").split("\n"), escaped.split("\n")),
       );
+      staleBlocks.push({ line: d.line, tag });
     }
     updated = updated.slice(0, d.contentStart) + injected + updated.slice(d.endTagStart);
   }
@@ -459,12 +470,18 @@ export async function processFile(
     error: undefined,
     exitCode: 0,
     diff: diffText,
+    staleBlocks: staleBlocks.reverse(),
   };
 }
 
 // ---------------------------------------------------------------------------
 // Block diff rendering
 // ---------------------------------------------------------------------------
+
+/** Header for one inject block: its line number and opening tag. */
+function blockHeader(line: number, tag: string): string {
+  return `line ${line} (${tag})`;
+}
 
 /** Render one inject block's change: removed lines (-) then added lines (+). */
 function renderBlockDiff(
@@ -473,7 +490,7 @@ function renderBlockDiff(
   oldLines: string[],
   newLines: string[],
 ): string {
-  const lines = [`line ${directive.line} (${tag})`];
+  const lines = [blockHeader(directive.line, tag)];
   for (const line of oldLines) lines.push(`  - ${line.replace(/\r/g, "")}`);
   for (const line of newLines) lines.push(`  + ${line.replace(/\r/g, "")}`);
   return lines.join("\n");
@@ -540,6 +557,7 @@ export async function collectFiles(paths: string[]): Promise<string[]> {
 export interface CliOptions {
   check: boolean;
   diff: boolean;
+  json: boolean;
   files: string[];
 }
 
@@ -553,6 +571,7 @@ export function parseArgs(args: string[]): CliAction {
   const options: CliOptions = {
     check: false,
     diff: false,
+    json: false,
     files: [],
   };
   let positionalOnly = false;
@@ -578,6 +597,9 @@ export function parseArgs(args: string[]): CliAction {
       case "--diff":
         options.diff = true;
         break;
+      case "--json":
+        options.json = true;
+        break;
       default:
         if (arg.startsWith("-") && arg !== "-") {
           return { kind: "error", message: `unknown option: ${arg}` };
@@ -586,6 +608,12 @@ export function parseArgs(args: string[]): CliAction {
   }
   if (options.files.length === 0) {
     return { kind: "error", message: "no files or directories given" };
+  }
+  if (options.json && !options.check) {
+    return { kind: "error", message: "--json requires --check" };
+  }
+  if (options.json && options.diff) {
+    return { kind: "error", message: "--json cannot be combined with --diff" };
   }
   return { kind: "run", options };
 }
@@ -620,6 +648,8 @@ OPTIONS:
                          would change. Use in CI to catch stale docs.
       --diff             Do not write files. Print the block changes as a
                          diff and exit 1 if any file would change.
+      --json             With --check, print stale blocks as a JSON array
+                         of {file, line, tag} entries on stdout.
   -h, --help             Print this help message and exit.
   -V, --version          Print the version number and exit.
 
@@ -634,6 +664,7 @@ EXAMPLES:
   commentsh src docs
   commentsh --check .          # fail CI if any docs are stale
   commentsh --diff README.md   # preview changes without writing
+  commentsh --check --json .   # machine-readable stale-block report
 
   Run it without cloning, straight from the repo:
 
@@ -671,11 +702,12 @@ async function runCli(options: CliOptions): Promise<void> {
   try {
     files = await collectFiles(options.files);
   } catch (err) {
+    if (options.json) console.log("[]");
     console.error(`commentsh: ${err instanceof Error ? err.message : String(err)}`);
     Deno.exit(1);
   }
 
-  const { changed, errors, firstExitCode } = await processFileList(files, options);
+  const { changed, errors, firstExitCode, staleEntries } = await processFileList(files, options);
 
   if (options.diff) {
     if (errors > 0) console.error(`commentsh: ${errors} error(s)`);
@@ -687,7 +719,12 @@ async function runCli(options: CliOptions): Promise<void> {
   }
 
   if (options.check) {
-    if (errors === 0 && changed === 0) {
+    if (options.json) {
+      console.log(JSON.stringify(staleEntries, null, 2));
+      if (errors > 0 || changed > 0) {
+        console.error(`commentsh: ${errors} error(s), ${changed} file(s) out of date`);
+      } else console.error(`commentsh: all ${files.length} file(s) up to date`);
+    } else if (errors === 0 && changed === 0) {
       console.log(`commentsh: all ${files.length} file(s) up to date`);
     } else console.error(`commentsh: ${errors} error(s), ${changed} file(s) out of date`);
   } else {
@@ -701,10 +738,30 @@ async function runCli(options: CliOptions): Promise<void> {
   Deno.exit(exitCode);
 }
 
-async function processFileList(files: string[], options: CliOptions) {
+/** One stale inject block reported by check mode: file, 1-based line, and opening tag. */
+export interface StaleEntry {
+  readonly file: string;
+  readonly line: number;
+  readonly tag: string;
+}
+
+/** Aggregate outcome of processing a file list. */
+export interface FileListResult {
+  readonly changed: number;
+  readonly errors: number;
+  readonly firstExitCode: number;
+  readonly staleEntries: StaleEntry[];
+}
+
+/** Process files in order, printing per-file results (and JSON entries in json mode). */
+export async function processFileList(
+  files: string[],
+  options: CliOptions,
+): Promise<FileListResult> {
   let changed = 0;
   let errors = 0;
   let firstExitCode = 0;
+  const staleEntries: StaleEntry[] = [];
   for (const file of files) {
     let result: ProcessResult;
     try {
@@ -728,13 +785,23 @@ async function processFileList(files: string[], options: CliOptions) {
         console.log(result.diff);
         console.log("");
       } else if (options.check) {
-        console.log(`out of date: ${file}`);
+        const staleBlocks = result.staleBlocks ?? [];
+        if (options.json) {
+          for (const block of staleBlocks) {
+            staleEntries.push({ file, line: block.line, tag: block.tag });
+          }
+        } else {
+          console.log(`out of date: ${file}`);
+          for (const block of staleBlocks) {
+            console.log(`  ${blockHeader(block.line, block.tag)}`);
+          }
+        }
       } else {
         console.log(`updated: ${file}`);
       }
     }
   }
-  return { changed, errors, firstExitCode };
+  return { changed, errors, firstExitCode, staleEntries };
 }
 
 if (import.meta.main) {

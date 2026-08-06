@@ -1,5 +1,12 @@
 import { assertEquals, assertNotEquals } from "./assert.ts";
-import { collectDirectives, collectFiles, processFile, syntaxForPath } from "../commentsh.ts";
+import {
+  collectDirectives,
+  collectFiles,
+  processFile,
+  processFileList,
+  syntaxForPath,
+} from "../commentsh.ts";
+import type { ProcessResult } from "../commentsh.ts";
 
 /** A command that exits with a non-zero code on every platform. */
 const FAILING_COMMAND = Deno.build.os === "windows" ? "exit /b 1" : "false";
@@ -237,6 +244,56 @@ Deno.test("collectFiles reports a clean error for missing paths", async () => {
   assertEquals(threw, true);
 });
 
+Deno.test("check mode reports stale blocks with line and tag", async () => {
+  await withTempFile(
+    "test.md",
+    "<!-- cmd: echo hello -->\n\nstale\n\n<!-- /cmd -->\n",
+    async (path) => {
+      const result = await processFile(path, { check: true });
+      assertEquals(result.changed, true);
+      assertEquals(result.staleBlocks, [{ line: 1, tag: "<!-- cmd: echo hello -->" }]);
+    },
+  );
+});
+
+Deno.test("stale blocks are reported in file order", async () => {
+  await withTempFile(
+    "test.md",
+    "<!-- cmd: echo one -->\n\none-old\n\n<!-- /cmd -->\n\ntext\n\n<!-- cmd: echo two -->\n\ntwo-old\n\n<!-- /cmd -->\n",
+    async (path) => {
+      const result = await processFile(path, { check: true });
+      assertEquals(result.staleBlocks, [
+        { line: 1, tag: "<!-- cmd: echo one -->" },
+        { line: 9, tag: "<!-- cmd: echo two -->" },
+      ]);
+    },
+  );
+});
+
+Deno.test("up-to-date files report no stale blocks", async () => {
+  await withTempFile(
+    "test.md",
+    "<!-- cmd: echo hello -->\n\nhello\n\n<!-- /cmd -->\n",
+    async (path) => {
+      const result = await processFile(path, { check: true });
+      assertEquals(result.changed, false);
+      assertEquals(result.staleBlocks, []);
+    },
+  );
+});
+
+Deno.test("cmd! side-effect blocks never appear as stale", async () => {
+  await withTempFile(
+    "test.md",
+    "<!-- cmd!: echo side -->\n",
+    async (path) => {
+      const result = await processFile(path);
+      assertEquals(result.changed, false);
+      assertEquals(result.staleBlocks, []);
+    },
+  );
+});
+
 Deno.test("stdout that forges a closing tag cannot corrupt the block", async () => {
   await withTempFile(
     "test.ts",
@@ -290,4 +347,82 @@ Deno.test("output containing --> alone is injected unchanged", async () => {
       assertEquals(again.changed, false);
     },
   );
+});
+
+/** Capture console.log/console.error output emitted by processFileList. */
+function captureConsole(): {
+  logs: string[];
+  errors: string[];
+  restore: () => void;
+} {
+  const logs: string[] = [];
+  const errors: string[] = [];
+  const log = console.log;
+  const error = console.error;
+  console.log = (...args: unknown[]) => logs.push(args.join(" "));
+  console.error = (...args: unknown[]) => errors.push(args.join(" "));
+  return {
+    logs,
+    errors,
+    restore: () => {
+      console.log = log;
+      console.error = error;
+    },
+  };
+}
+
+const CHECK_OPTIONS = { check: true, diff: false, json: false, files: [] as string[] };
+
+Deno.test("check mode prints out of date headers for every stale block", async () => {
+  await withTempFile(
+    "test.md",
+    "<!-- cmd: echo one -->\n\none-old\n\n<!-- /cmd -->\n\ntext\n\n<!-- cmd: echo two -->\n\ntwo-old\n\n<!-- /cmd -->\n",
+    async (path) => {
+      const captured = captureConsole();
+      try {
+        await processFileList([path], CHECK_OPTIONS);
+      } finally {
+        captured.restore();
+      }
+      assertEquals(captured.logs, [
+        `out of date: ${path}`,
+        "  line 1 (<!-- cmd: echo one -->)",
+        "  line 9 (<!-- cmd: echo two -->)",
+      ]);
+      assertEquals(captured.errors, []);
+    },
+  );
+});
+
+Deno.test("check mode prints no stale headers for a failing cmd block", async () => {
+  await withTempFile(
+    "test.md",
+    `<!-- cmd: ${FAILING_COMMAND} -->\n\nstale\n\n<!-- /cmd -->\n`,
+    async (path) => {
+      const captured = captureConsole();
+      let errors = 0;
+      try {
+        ({ errors } = await processFileList([path], CHECK_OPTIONS));
+      } finally {
+        captured.restore();
+      }
+      assertEquals(captured.logs, []);
+      assertEquals(errors, 1);
+      assertEquals(captured.errors.length, 1);
+      assertEquals(captured.errors[0].includes("cmd block at line 1 failed"), true);
+    },
+  );
+});
+
+Deno.test("ProcessResult is constructible without staleBlocks", () => {
+  const result: ProcessResult = {
+    path: "x.md",
+    changed: false,
+    directives: 0,
+    skipped: false,
+    error: undefined,
+    exitCode: 0,
+    diff: undefined,
+  };
+  assertEquals(result.staleBlocks, undefined);
 });
