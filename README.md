@@ -148,7 +148,9 @@ stderr and keep the exit code non-zero — so stdout is always valid JSON:
 ```
 
 Or use the reusable [commentsh check action](.github/actions/check-commentsh/action.yml) — the same
-check with zero setup, inputs for `files` and a `version` ref, and `changed`/`stale-files` outputs:
+check with zero setup, inputs for `files` and a `version` ref, and `changed`/`stale-files` outputs.
+The action reads the `--check --json` report (the pinned `version` must be a ref that supports it)
+and needs `jq`, which is preinstalled on GitHub-hosted runners:
 
 ```yaml
 - uses: EthanThatOneKid/commentsh/.github/actions/check-commentsh@main

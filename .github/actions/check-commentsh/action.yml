@@ -10,6 +10,7 @@ inputs:
     description: >-
       commentsh ref (tag, branch, or commit) to run from GitHub raw. Leave
       empty to use the action's own ref, or when running the action locally.
+      The ref must support --check --json.
     required: false
   deno-version:
     description: Deno version to install.
@@ -46,7 +47,10 @@ runs:
           CSH="./commentsh.ts"
         fi
 
-        ARGS=(--check)
+        # --json keeps stdout as a single JSON array of stale-block entries,
+        # one {file, line, tag} per block, so the outputs come from the
+        # machine report instead of parsing the human text.
+        ARGS=(--check --json)
 
         FILES=()
         while IFS= read -r line; do
@@ -55,24 +59,42 @@ runs:
           [ -n "${line}" ] && FILES+=("${line}")
         done <<< "${INPUT_FILES}"
 
+        ERR_FILE="$(mktemp)"
+        OUT_FILE="$(mktemp)"
         set +e
-        OUTPUT="$(deno run --allow-read --allow-write --allow-run "${CSH}" "${ARGS[@]}" "${FILES[@]}" 2>&1)"
+        STDOUT="$(deno run --allow-read --allow-write --allow-run "${CSH}" "${ARGS[@]}" "${FILES[@]}" 2>"${ERR_FILE}")"
         STATUS=$?
         set -e
 
-        printf '%s\n' "${OUTPUT}"
+        # Keep the JSON report on stdout and the human diagnostics on stderr.
+        printf '%s\n' "${STDOUT}" | tee "${OUT_FILE}"
+        cat "${ERR_FILE}" >&2
+        rm -f "${ERR_FILE}"
 
-        if [ "${STATUS}" -ne 0 ]; then
+        # stdout is always valid JSON from --check --json; if it is not (for
+        # example an old commentsh ref without --json), report no stale blocks
+        # and let the non-zero STATUS fail the build.
+        if command -v jq >/dev/null 2>&1 && jq -e . "${OUT_FILE}" >/dev/null 2>&1; then
+          STALE_COUNT="$(jq -r 'length' "${OUT_FILE}")"
+          STALE_FILES="$(jq -r '.[].file' "${OUT_FILE}" | sort -u)"
+        else
+          STALE_COUNT=0
+          STALE_FILES=""
+        fi
+        rm -f "${OUT_FILE}"
+
+        if [ "${STALE_COUNT}" -gt 0 ]; then
           echo "changed=true" >> "${GITHUB_OUTPUT}"
         else
           echo "changed=false" >> "${GITHUB_OUTPUT}"
         fi
 
-        STALE="$(printf '%s\n' "${OUTPUT}" | sed -n 's/^out of date: //p')"
-        {
-          echo "stale-files<<CSH_EOF"
-          printf '%s\n' "${STALE}"
-          echo "CSH_EOF"
-        } >> "${GITHUB_OUTPUT}"
+        if [ -n "${STALE_FILES}" ]; then
+          {
+            echo "stale-files<<CSH_EOF"
+            printf '%s\n' "${STALE_FILES}"
+            echo "CSH_EOF"
+          } >> "${GITHUB_OUTPUT}"
+        fi
 
         exit "${STATUS}"

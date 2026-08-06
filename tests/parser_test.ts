@@ -1,4 +1,4 @@
-import { assertEquals } from "./assert.ts";
+import { assertEquals } from "@std/assert";
 import { collectDirectives, escapeOutput } from "../commentsh.ts";
 import type { CommentSyntax } from "../commentsh.ts";
 
