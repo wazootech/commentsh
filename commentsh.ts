@@ -522,11 +522,13 @@ const SKIPPED = new Set([
   "out",
 ]);
 
-/** Match a SKIPPED name at the end of a path segment, so nested vendor
- * folders are pruned while an explicitly passed root that shares the name
- * (e.g. `commentsh node_modules`) is still walked, as before. */
+/** Skip regex for @std/fs/walk: matches a SKIPPED name at the start or
+ * end of a path segment, so nested vendor folders AND top-level ones
+ * under a relative root like `.` are pruned (walk's join() strips a
+ * `./` prefix, leaving the bare name). Trade-off: an explicitly passed
+ * root that is itself a skipped name is now pruned too. */
 const SKIP_PATTERN = new RegExp(
-  `[\\\\/](?:${[...SKIPPED].map((name) => name.replaceAll(".", "\.")).join("|")})$`,
+  `(?:^|[\\\\/])(?:${[...SKIPPED].map((name) => name.replaceAll(".", "\.")).join("|")})$`,
 );
 
 /** Expand files and directories into a flat file list. */
@@ -548,9 +550,14 @@ export async function collectFiles(paths: string[]): Promise<string[]> {
           skip: [SKIP_PATTERN],
         })
       ) {
-        const relative = entry.path.slice(path.length).replace(/^[\\/]+/, "")
-          .replaceAll("\\", "/");
-        files.push(`${path}/${relative}`);
+        let root = path;
+        while (root.endsWith("\\") || root.endsWith("/")) root = root.slice(0, -1);
+        if (root.startsWith("./")) root = root.slice(2);
+        let relative = entry.path.startsWith(root) ? entry.path.slice(root.length) : entry.path;
+        while (relative.startsWith("\\") || relative.startsWith("/")) {
+          relative = relative.slice(1);
+        }
+        files.push(`${path}/${relative.replaceAll("\\", "/")}`);
       }
     }
   }
