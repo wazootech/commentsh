@@ -1,10 +1,11 @@
 /**
  * commentsh — Comment Shell. Runs shell commands from code comments.
  * `cmd:` blocks inject command stdout between the tag and its `/cmd` closer;
- * `cmd!:` lines run one-liners as side effects. Zero imports; run from any
- * URL or checkout.
+ * `cmd!:` lines run one-liners as side effects. One std dependency
+ * (@std/fs) for file walking; run from any URL or checkout.
  * @module
  */
+import { walk } from "@std/fs/walk";
 
 export const VERSION = "0.2.0";
 
@@ -521,16 +522,12 @@ const SKIPPED = new Set([
   "out",
 ]);
 
-async function* walkDirectory(dir: string): AsyncGenerator<string> {
-  for await (const entry of Deno.readDir(dir)) {
-    const path = `${dir}/${entry.name}`;
-    if (entry.isDirectory) {
-      if (!SKIPPED.has(entry.name)) yield* walkDirectory(path);
-    } else if (entry.isFile) {
-      yield path;
-    }
-  }
-}
+/** Match a SKIPPED name at the end of a path segment, so nested vendor
+ * folders are pruned while an explicitly passed root that shares the name
+ * (e.g. `commentsh node_modules`) is still walked, as before. */
+const SKIP_PATTERN = new RegExp(
+  `[\\\\/](?:${[...SKIPPED].map((name) => name.replaceAll(".", "\.")).join("|")})$`,
+);
 
 /** Expand files and directories into a flat file list. */
 export async function collectFiles(paths: string[]): Promise<string[]> {
@@ -544,7 +541,17 @@ export async function collectFiles(paths: string[]): Promise<string[]> {
     }
     if (info.isFile) files.push(path);
     else if (info.isDirectory) {
-      for await (const entry of walkDirectory(path)) files.push(entry);
+      for await (
+        const entry of walk(path, {
+          includeDirs: false,
+          includeSymlinks: false,
+          skip: [SKIP_PATTERN],
+        })
+      ) {
+        const relative = entry.path.slice(path.length).replace(/^[\\/]+/, "")
+          .replaceAll("\\", "/");
+        files.push(`${path}/${relative}`);
+      }
     }
   }
   return files;
