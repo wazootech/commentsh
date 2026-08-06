@@ -238,6 +238,30 @@ commentsh [OPTIONS] <FILE|DIR>...
 Exit codes: `0` success (or everything up to date with `--check`/`--diff`), `1` a command failed / a
 directive is malformed / stale docs, `2` invalid usage.
 
+## Library API
+
+commentsh is also a library. The tokenizer, syntax registry, and block renderers are exported from
+the package entrypoint:
+
+```ts
+import {
+  blockHeader,
+  collectDirectives,
+  renderBlockDiff,
+  scanTokens,
+  SYNTAXES,
+} from "@ethanthatonekid/commentsh";
+
+const tokens = scanTokens(text, SYNTAXES.html); // raw Token stream
+const directives = collectDirectives(text, SYNTAXES.html); // paired directives
+const header = blockHeader(4, "opening tag text"); // "line 4 (opening tag text)"
+```
+
+`scanTokens` and `collectDirectives` are pure: given text and a `CommentSyntax` (one of
+`SYNTAXES.html | hash | slash | dash | star`) they never touch the file system. `renderBlockDiff`
+renders the `--diff` output for a single block, and `escapeOutput` neutralizes directive-shaped
+lines in command output.
+
 ## Design notes
 
 - **Idempotent.** Running commentsh twice produces the same file. The generated blocks in this

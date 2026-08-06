@@ -19,11 +19,23 @@ export interface CommentSyntax {
   readonly suffix: string;
 }
 
+/** Names of the built-in comment syntaxes exposed via {@linkcode SYNTAXES}. */
+export type SyntaxName = "html" | "hash" | "slash" | "dash" | "star";
+
 const HTML: CommentSyntax = { prefix: "<!--", suffix: "-->" };
 const HASH: CommentSyntax = { prefix: "#", suffix: "" };
 const SLASH: CommentSyntax = { prefix: "//", suffix: "" };
 const DASH: CommentSyntax = { prefix: "--", suffix: "" };
 const STAR: CommentSyntax = { prefix: "/*", suffix: "*/" };
+
+/** The named built-in comment syntaxes, keyed for lookup. */
+export const SYNTAXES: Record<SyntaxName, CommentSyntax> = {
+  html: HTML,
+  hash: HASH,
+  slash: SLASH,
+  dash: DASH,
+  star: STAR,
+};
 
 const EXT: Record<string, CommentSyntax> = {
   ".md": HTML,
@@ -113,7 +125,12 @@ export interface Directive {
   readonly malformed: boolean;
 }
 
-interface Token {
+/**
+ * A raw tokenizer hit: an opening `cmd:`/`cmd!:` tag (`inject`/`run`)
+ * or a `/cmd` closing tag (`end`). `start`/`end` are character offsets
+ * into the original text; `line` is the 1-based line of the token.
+ */
+export interface Token {
   readonly type: "inject" | "run" | "end";
   readonly command: string | undefined;
   readonly start: number;
@@ -200,7 +217,8 @@ function scanLine(
 }
 
 /** Every directive token in a file, in line order. */
-function scanTokens(text: string, syntax: CommentSyntax): Token[] {
+/** Tokenize file text with the given syntax, in file order. */
+export function scanTokens(text: string, syntax: CommentSyntax): Token[] {
   const tokens: Token[] = [];
   let lineStart = 0;
   let lineNo = 1;
@@ -481,12 +499,13 @@ export async function processFile(
 // ---------------------------------------------------------------------------
 
 /** Header for one inject block: its line number and opening tag. */
-function blockHeader(line: number, tag: string): string {
+/** Render the human `line N (tag)` header for a stale or changed block. */
+export function blockHeader(line: number, tag: string): string {
   return `line ${line} (${tag})`;
 }
 
 /** Render one inject block's change: removed lines (-) then added lines (+). */
-function renderBlockDiff(
+export function renderBlockDiff(
   directive: Directive,
   tag: string,
   oldLines: string[],
