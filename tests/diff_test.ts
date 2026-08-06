@@ -1,4 +1,4 @@
-import { assertEquals, assertNotEquals } from "./assert.ts";
+import { assertEquals, assertNotEquals } from "@std/assert";
 import { processFile } from "../commentsh.ts";
 
 /** Prints `a\n<!-- /cmd -->\nb`: cmd needs unquoted parens; sh needs them quoted. */
