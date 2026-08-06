@@ -46,6 +46,15 @@ Deno.test("returns help and version actions", () => {
   assertEquals(parseArgs(["-V"]).kind, "version");
 });
 
+Deno.test("supports --flag=value boolean form", () => {
+  const on = runOptions(["--check=true", "README.md"]);
+  assertEquals(on?.check, true);
+  assertEquals(on?.files, ["README.md"]);
+  const off = runOptions(["--check=false", "README.md"]);
+  assertEquals(off?.check, false);
+  assertEquals(off?.files, ["README.md"]);
+});
+
 Deno.test("parses the --json flag with --check", () => {
   const options = runOptions(["--check", "--json", "README.md"]);
   assertEquals(options?.check, true);

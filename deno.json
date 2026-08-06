@@ -12,5 +12,8 @@
   },
   "fmt": {
     "lineWidth": 100
+  },
+  "imports": {
+    "@std/cli": "jsr:@std/cli@^1.0.32"
   }
 }

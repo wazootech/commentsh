@@ -1,10 +1,11 @@
 /**
  * commentsh — Comment Shell. Runs shell commands from code comments.
  * `cmd:` blocks inject command stdout between the tag and its `/cmd` closer;
- * `cmd!:` lines run one-liners as side effects. Zero imports; run from any
- * URL or checkout.
+ * `cmd!:` lines run one-liners as side effects. One std dependency
+ * (@std/cli) for argument parsing; run from any URL or checkout.
  * @module
  */
+import { parseArgs as parseArgsStd } from "@std/cli/parse-args";
 
 export const VERSION = "0.2.0";
 
@@ -568,44 +569,30 @@ export type CliAction =
   | { readonly kind: "error"; readonly message: string };
 
 export function parseArgs(args: string[]): CliAction {
-  const options: CliOptions = {
-    check: false,
-    diff: false,
-    json: false,
-    files: [],
-  };
-  let positionalOnly = false;
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i];
-    if (positionalOnly) {
-      options.files.push(arg);
-      continue;
-    }
-    switch (arg) {
-      case "--":
-        positionalOnly = true;
-        break;
-      case "-h":
-      case "--help":
-        return { kind: "help" };
-      case "-V":
-      case "--version":
-        return { kind: "version" };
-      case "--check":
-        options.check = true;
-        break;
-      case "--diff":
-        options.diff = true;
-        break;
-      case "--json":
-        options.json = true;
-        break;
-      default:
-        if (arg.startsWith("-") && arg !== "-") {
-          return { kind: "error", message: `unknown option: ${arg}` };
-        } else options.files.push(arg);
-    }
+  let unknownArg: string | undefined;
+  const parsed = parseArgsStd(args, {
+    boolean: ["check", "diff", "json", "help", "version"],
+    alias: { h: "help", V: "version" },
+    unknown: (arg, key) => {
+      // key === "" is std's intermediate probe for single-char flags like
+      // `-h`; ignore it so the alias resolution below decides the real key.
+      if (key !== undefined && key !== "") {
+        unknownArg ??= arg;
+        return false;
+      }
+    },
+  });
+  if (parsed.help) return { kind: "help" };
+  if (parsed.version) return { kind: "version" };
+  if (unknownArg !== undefined) {
+    return { kind: "error", message: `unknown option: ${unknownArg}` };
   }
+  const options: CliOptions = {
+    check: Boolean(parsed.check),
+    diff: Boolean(parsed.diff),
+    json: Boolean(parsed.json),
+    files: parsed._.map(String),
+  };
   if (options.files.length === 0) {
     return { kind: "error", message: "no files or directories given" };
   }
