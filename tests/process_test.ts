@@ -1,4 +1,4 @@
-import { assertEquals, assertNotEquals } from "./assert.ts";
+import { assertEquals, assertNotEquals } from "@std/assert";
 import {
   collectDirectives,
   collectFiles,
@@ -242,6 +242,25 @@ Deno.test("collectFiles reports a clean error for missing paths", async () => {
     assertNotEquals(err instanceof Error ? err.message : "", "");
   }
   assertEquals(threw, true);
+});
+
+Deno.test("collectFiles prunes top-level vendor dirs under a relative root", async () => {
+  const dir = await Deno.makeTempDir();
+  const cwd = Deno.cwd();
+  try {
+    await Deno.mkdir(`${dir}/node_modules/pkg`, { recursive: true });
+    await Deno.mkdir(`${dir}/.git/hooks`, { recursive: true });
+    await Deno.mkdir(`${dir}/src`, { recursive: true });
+    await Deno.writeTextFile(`${dir}/src/a.md`, "x");
+    await Deno.writeTextFile(`${dir}/node_modules/pkg/c.md`, "x");
+    await Deno.writeTextFile(`${dir}/.git/hooks/d.md`, "x");
+    Deno.chdir(dir);
+    const files = await collectFiles(["."]);
+    assertEquals(files.sort(), ["./src/a.md"]);
+  } finally {
+    Deno.chdir(cwd);
+    await Deno.remove(dir, { recursive: true });
+  }
 });
 
 Deno.test("check mode reports stale blocks with line and tag", async () => {

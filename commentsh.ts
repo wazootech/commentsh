@@ -1,10 +1,12 @@
 /**
  * commentsh — Comment Shell. Runs shell commands from code comments.
  * `cmd:` blocks inject command stdout between the tag and its `/cmd` closer;
- * `cmd!:` lines run one-liners as side effects. Zero imports; run from any
- * URL or checkout.
+ * `cmd!:` lines run one-liners as side effects. Uses @std/fs for file walking
+ * and @std/cli for argument parsing; run from any URL or checkout.
  * @module
  */
+import { parseArgs as parseArgsStd } from "@std/cli/parse-args";
+import { walk } from "@std/fs/walk";
 
 export const VERSION = "0.2.0";
 
@@ -540,16 +542,14 @@ const SKIPPED = new Set([
   "out",
 ]);
 
-async function* walkDirectory(dir: string): AsyncGenerator<string> {
-  for await (const entry of Deno.readDir(dir)) {
-    const path = `${dir}/${entry.name}`;
-    if (entry.isDirectory) {
-      if (!SKIPPED.has(entry.name)) yield* walkDirectory(path);
-    } else if (entry.isFile) {
-      yield path;
-    }
-  }
-}
+/** Skip regex for @std/fs/walk: matches a SKIPPED name at the start or
+ * end of a path segment, so nested vendor folders AND top-level ones
+ * under a relative root like `.` are pruned (walk's join() strips a
+ * `./` prefix, leaving the bare name). Trade-off: an explicitly passed
+ * root that is itself a skipped name is now pruned too. */
+const SKIP_PATTERN = new RegExp(
+  `(?:^|[\\\\/])(?:${[...SKIPPED].map((name) => name.replaceAll(".", "\.")).join("|")})$`,
+);
 
 /** Expand files and directories into a flat file list. */
 export async function collectFiles(paths: string[]): Promise<string[]> {
@@ -563,7 +563,22 @@ export async function collectFiles(paths: string[]): Promise<string[]> {
     }
     if (info.isFile) files.push(path);
     else if (info.isDirectory) {
-      for await (const entry of walkDirectory(path)) files.push(entry);
+      for await (
+        const entry of walk(path, {
+          includeDirs: false,
+          includeSymlinks: false,
+          skip: [SKIP_PATTERN],
+        })
+      ) {
+        let root = path;
+        while (root.endsWith("\\") || root.endsWith("/")) root = root.slice(0, -1);
+        if (root.startsWith("./")) root = root.slice(2);
+        let relative = entry.path.startsWith(root) ? entry.path.slice(root.length) : entry.path;
+        while (relative.startsWith("\\") || relative.startsWith("/")) {
+          relative = relative.slice(1);
+        }
+        files.push(`${path}/${relative.replaceAll("\\", "/")}`);
+      }
     }
   }
   return files;
@@ -587,44 +602,31 @@ export type CliAction =
   | { readonly kind: "error"; readonly message: string };
 
 export function parseArgs(args: string[]): CliAction {
-  const options: CliOptions = {
-    check: false,
-    diff: false,
-    json: false,
-    files: [],
-  };
-  let positionalOnly = false;
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i];
-    if (positionalOnly) {
-      options.files.push(arg);
-      continue;
-    }
-    switch (arg) {
-      case "--":
-        positionalOnly = true;
-        break;
-      case "-h":
-      case "--help":
-        return { kind: "help" };
-      case "-V":
-      case "--version":
-        return { kind: "version" };
-      case "--check":
-        options.check = true;
-        break;
-      case "--diff":
-        options.diff = true;
-        break;
-      case "--json":
-        options.json = true;
-        break;
-      default:
-        if (arg.startsWith("-") && arg !== "-") {
-          return { kind: "error", message: `unknown option: ${arg}` };
-        } else options.files.push(arg);
-    }
+  let unknownArg: string | undefined;
+  const parsed = parseArgsStd(args, {
+    boolean: ["check", "diff", "json", "help", "version"],
+    string: ["_"], // keep positionals as strings: a file named "123" stays "123"
+    alias: { h: "help", V: "version" },
+    unknown: (arg, key) => {
+      // key === "" is std's intermediate probe for single-char flags like
+      // `-h`; ignore it so the alias resolution below decides the real key.
+      if (key !== undefined && key !== "") {
+        unknownArg ??= arg;
+        return false;
+      }
+    },
+  });
+  if (parsed.help) return { kind: "help" };
+  if (parsed.version) return { kind: "version" };
+  if (unknownArg !== undefined) {
+    return { kind: "error", message: `unknown option: ${unknownArg}` };
   }
+  const options: CliOptions = {
+    check: Boolean(parsed.check),
+    diff: Boolean(parsed.diff),
+    json: Boolean(parsed.json),
+    files: parsed._.map(String),
+  };
   if (options.files.length === 0) {
     return { kind: "error", message: "no files or directories given" };
   }

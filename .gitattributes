@@ -1,0 +1,3 @@
+# Normalize to LF on commit and checkout, overriding core.autocrlf on
+# Windows. deno fmt and CI require LF; this ends the CRLF/LF status noise.
+* text=auto eol=lf
