@@ -1,4 +1,4 @@
-import { assertEquals } from "./assert.ts";
+import { assertEquals } from "@std/assert";
 import {
   blockHeader,
   collectDirectives,
