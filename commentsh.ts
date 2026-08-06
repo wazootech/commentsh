@@ -572,6 +572,7 @@ export function parseArgs(args: string[]): CliAction {
   let unknownArg: string | undefined;
   const parsed = parseArgsStd(args, {
     boolean: ["check", "diff", "json", "help", "version"],
+    string: ["_"], // keep positionals as strings: a file named "123" stays "123"
     alias: { h: "help", V: "version" },
     unknown: (arg, key) => {
       // key === "" is std's intermediate probe for single-char flags like
