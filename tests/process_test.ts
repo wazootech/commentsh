@@ -1,4 +1,4 @@
-import { assertEquals, assertNotEquals } from "./assert.ts";
+import { assertEquals, assertNotEquals } from "@std/assert";
 import {
   collectDirectives,
   collectFiles,

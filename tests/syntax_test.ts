@@ -1,4 +1,4 @@
-import { assertEquals } from "./assert.ts";
+import { assertEquals } from "@std/assert";
 import { syntaxForPath } from "../commentsh.ts";
 
 Deno.test("markdown uses HTML comments", () => {
