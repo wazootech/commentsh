@@ -30,6 +30,25 @@ Command output that contains a directive-shaped line can't forge its own tags. S
 escaped before injection — the comment open becomes `&lt;!--` for HTML files, `///` for
 slash-comment files, and `##` for hash-comment files — so injected blocks always round-trip intact.
 
+#### Escaping forged output
+
+The escape is easier to see with a command that actually tries to forge a tag. The block below
+prints a literal `<!-- /cmd -->` closing tag — written as `echo "<!-- /cmd --"'>'` (joined from
+`<!-- /cmd --` and `>`) so the command line itself never contains the `-->` sequence it would
+otherwise close. What commentsh writes is the neutralized form, `&lt;!-- /cmd -->`, so the injected
+line can never be misread as a real tag:
+
+<!-- cmd: echo "<!-- /cmd --"'>' -->
+
+&lt;!-- /cmd -->
+
+<!-- /cmd -->
+
+The raw file above contains `&lt;!-- /cmd -->`, not `<!-- /cmd -->` — which is why the rendered page
+shows the forged-looking tag without commentsh ever treating it as one. The same neutralization
+covers forged opening tags (`<!-- cmd: ... -->` becomes `&lt;!-- cmd: ... -->`), and because the
+written lines start with `&lt;` they never re-tokenize, so the block is stable on every run.
+
 ### `cmd!:` — execute a side effect, leave the file alone
 
 A one-line directive that runs its command like `go:generate` would, streaming the output to your
